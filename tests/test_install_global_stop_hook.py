@@ -47,7 +47,7 @@ def test_hooks_json_is_unchanged_when_command_is_already_correct(tmp_path: Path)
   from scripts.install_global_stop_hook import ensure_hooks_json
 
   hooks_json = tmp_path / "hooks.json"
-  command = '"C:\\Users\\lemon\\.codex\\hooks\\stop_v_task_classifier\\.venv\\Scripts\\python.exe" "C:\\Users\\lemon\\.codex\\hooks\\stop_v_task_classifier\\stop_v_task_classifier.py"'
+  command = 'python "C:\\Users\\lemon\\.codex\\hooks\\stop_v_task_classifier\\stop_v_task_classifier.py"'
   hooks_json.write_text(
     json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}),
     encoding="utf-8",
@@ -66,7 +66,7 @@ def test_hooks_json_replaces_only_hello_world_command(tmp_path: Path):
 
   hooks_json = tmp_path / "hooks.json"
   old_command = 'python "C:\\Users\\lemon\\.codex\\hooks\\hello_world.py"'
-  new_command = '"C:\\Users\\lemon\\.codex\\hooks\\stop_v_task_classifier\\.venv\\Scripts\\python.exe" "C:\\Users\\lemon\\.codex\\hooks\\stop_v_task_classifier\\stop_v_task_classifier.py"'
+  new_command = 'python "C:\\Users\\lemon\\.codex\\hooks\\stop_v_task_classifier\\stop_v_task_classifier.py"'
   hooks_json.write_text(
     json.dumps({
       "hooks": {
@@ -98,7 +98,7 @@ def test_hooks_json_adds_command_without_replacing_unrelated_stop_command(tmp_pa
 
   hooks_json = tmp_path / "hooks.json"
   existing_command = "python other.py"
-  new_command = '"C:\\Users\\lemon\\.codex\\hooks\\stop_v_task_classifier\\.venv\\Scripts\\python.exe" "C:\\Users\\lemon\\.codex\\hooks\\stop_v_task_classifier\\stop_v_task_classifier.py"'
+  new_command = 'python "C:\\Users\\lemon\\.codex\\hooks\\stop_v_task_classifier\\stop_v_task_classifier.py"'
   hooks_json.write_text(
     json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": existing_command}]}]}}),
     encoding="utf-8",
@@ -110,6 +110,34 @@ def test_hooks_json_adds_command_without_replacing_unrelated_stop_command(tmp_pa
 
   assert result.changed is True
   assert commands == [new_command, existing_command]
+
+
+def test_hooks_json_replaces_legacy_target_venv_command_for_same_hook(tmp_path: Path):
+  from scripts.install_global_stop_hook import ensure_hooks_json
+
+  hooks_json = tmp_path / "hooks.json"
+  old_command = '"C:\\Users\\lemon\\.codex\\hooks\\stop_v_task_classifier\\.venv\\Scripts\\python.exe" "C:\\Users\\lemon\\.codex\\hooks\\stop_v_task_classifier\\stop_v_task_classifier.py"'
+  new_command = 'python "C:\\Users\\lemon\\.codex\\hooks\\stop_v_task_classifier\\stop_v_task_classifier.py"'
+  hooks_json.write_text(
+    json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": old_command}]}]}}),
+    encoding="utf-8",
+  )
+
+  result = ensure_hooks_json(hooks_json, new_command, dry_run=False, force=False)
+  data = json.loads(hooks_json.read_text(encoding="utf-8"))
+  commands = [item["command"] for item in data["hooks"]["Stop"][0]["hooks"]]
+
+  assert result.changed is True
+  assert commands == [new_command]
+
+
+def test_build_hook_command_uses_plain_python_launcher(tmp_path: Path):
+  from scripts.install_global_stop_hook import build_hook_command
+
+  command = build_hook_command(tmp_path / "global")
+
+  assert '".venv\\Scripts\\python.exe"' not in command
+  assert command == f'python "{tmp_path / "global" / "stop_v_task_classifier.py"}"'
 
 
 def test_dependencies_sync_runs_only_when_dependency_files_changed(tmp_path: Path):
@@ -133,9 +161,9 @@ def test_dependencies_sync_runs_only_when_dependency_files_changed(tmp_path: Pat
     runner=lambda command: calls.append(command),
   )
 
-  assert changed is True
+  assert changed is False
   assert unchanged is False
-  assert calls == [["uv", "sync", "--project", str(target), "--python", "3.13"]]
+  assert calls == []
 
 
 def test_run_smoke_validates_hook_json_output(tmp_path: Path):
@@ -146,7 +174,6 @@ def test_run_smoke_validates_hook_json_output(tmp_path: Path):
   target.mkdir(parents=True)
   (source / "tests" / "fixtures").mkdir(parents=True)
   (source / "tests" / "fixtures" / "stop_payload_doc_done.json").write_text('{"last_assistant_message":"x"}', encoding="utf-8")
-  (target / ".venv" / "Scripts").mkdir(parents=True)
   (target / "stop_v_task_classifier.py").write_text("pass\n", encoding="utf-8")
 
   calls = []
@@ -165,4 +192,6 @@ def test_run_smoke_validates_hook_json_output(tmp_path: Path):
   )
 
   assert output["continue"] is True
-  assert calls
+  assert calls == [
+    (["py", "-3.13", str(target / "stop_v_task_classifier.py")], b'{"last_assistant_message":"x"}')
+  ]

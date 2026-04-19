@@ -51,6 +51,7 @@
 - 使用同级 `.env`
 - 要求 `.gitignore` 忽略真实 `.env`
 - 提供 `.env.example`
+- 当 hook 失败退出时写本地诊断日志，并在 stderr 给出日志路径
 
 ## Non-Goals
 
@@ -105,6 +106,7 @@
 - 使用 Python `openai` SDK
 - 发起一次二次模型调用
 - hook 必须兼容标准 SDK `Response` 对象，以及供应商返回 raw SSE string 的情况；只要能从 `response.output_text.done` 或等价事件中提取最终文本即可
+- hook 启动期加载 `openai` / `dotenv` 依赖时，若命中 `sys.modules[...] = None` 之类的半初始化哨兵状态，必须先清理并重试导入，再决定是否判定为 bootstrap failure
 
 **非目标**
 
@@ -306,6 +308,35 @@ Hook 后续逻辑必须可程序解析，不能靠自然语言再猜一次。
   - `OPENAI_BASE_URL`
   - `OPENAI_MODEL`
 
+### REQ-0001-011：失败退出必须留下可调查的本地诊断日志
+
+**动机**
+
+仅看到 `hook exited with code 1` 过于黑盒，必须给本地排障留下直接证据。
+
+**范围**
+
+- Hook 在失败退出前必须尝试写入脚本同级的 `stop_v_task_classifier.log`
+- 日志格式应为逐行 JSON，至少包含时间戳、事件名、错误类型、错误消息与 traceback
+- 正常成功时 stdout 仍只能输出 Codex hook JSON，不得混入调试文本
+- 失败时 stderr 至少输出一条指向日志文件的提示
+- 日志中不得写入 `OPENAI_API_KEY` 或完整 `last_assistant_message` 正文
+- stdin payload 解析失败时也必须进入同一套日志链路
+- 第三方依赖在启动期导入失败时，也必须尽量进入同一套日志链路，而不是只吐裸 traceback
+- 若失败根因只是 `sys.modules["openai"] = None` / `sys.modules["dotenv"] = None` 这类可恢复哨兵状态，hook 应先尝试恢复，不应直接退出
+- 日志写入失败本身不应成为新的主故障；若日志落盘失败，应在 stderr 报告该诊断子故障
+
+**非目标**
+
+- 不做远程日志聚合
+- 不做日志轮转系统
+
+**验收口径**
+
+- 构造一个 API 调用失败或等价异常，hook 退出码为 `1`，且同级目录生成 `stop_v_task_classifier.log`
+- stderr 包含日志路径提示
+- 日志不包含真实 API key 或完整 assistant 正文
+
 ## Assumptions And Constraints
 
 - 截至 `2026-04-19`，官方文档仍声明 `Codex hooks` 为 `Experimental`，且 `Windows support temporarily disabled`。
@@ -321,6 +352,7 @@ Hook 后续逻辑必须可程序解析，不能靠自然语言再猜一次。
 - 给一个明确只表示某个 `M` 完成的示例 payload，full-v 分类器不得误判为整个 `v` 系列已完成。
 - 给一个明确表示仍在进行中的示例 payload，脚本不输出固定提示语。
 - `.env` 不进入 git，`.env.example` 存在。
+- 给一个可复现的失败场景，stderr 会提示日志路径，且本地日志包含可调查错误上下文。
 - 文档中有显式风险记录，而不是把 Windows 支持状态写成已解决。
 
 ## Risks

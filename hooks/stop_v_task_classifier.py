@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import importlib
 import json
 import sys
+import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
-
-from dotenv import dotenv_values
-from openai import OpenAI
 
 
 BRANCH_MESSAGES = {
@@ -70,6 +70,31 @@ CLASSIFIER_PRIORITY = [
   "v_milestone_done",
   "v_doc_writing_done",
 ]
+
+
+def get_log_path(script_path: Path) -> Path:
+  return script_path.with_name("stop_v_task_classifier.log")
+
+
+def append_log_event(log_path: Path, event: str, **fields: Any) -> None:
+  payload = {
+    "timestamp": datetime.now(timezone.utc).isoformat(),
+    "event": event,
+    **fields,
+  }
+  log_path.parent.mkdir(parents=True, exist_ok=True)
+  with log_path.open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def try_append_log_event(log_path: Path, event: str, *, stderr: Any, **fields: Any) -> None:
+  try:
+    append_log_event(log_path, event, **fields)
+  except Exception as exc:
+    print(
+      f"Stop hook logging failed. path={log_path} error={type(exc).__name__}: {exc}",
+      file=stderr,
+    )
 
 
 def extract_last_assistant_message(payload: dict[str, Any]) -> str:
@@ -143,8 +168,32 @@ def normalize_base_url(raw_base_url: str) -> str:
   return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
-def load_settings(env_path: Path) -> dict[str, str]:
-  values = dotenv_values(env_path)
+def import_runtime_module(module_name: str) -> Any:
+  if sys.modules.get(module_name) is None:
+    sys.modules.pop(module_name, None)
+  return importlib.import_module(module_name)
+
+
+def load_runtime_dependencies() -> tuple[Any, Any]:
+  try:
+    dotenv_module = import_runtime_module("dotenv")
+    openai_module = import_runtime_module("openai")
+  except Exception as exc:
+    raise RuntimeError("Hook bootstrap dependency import failed") from exc
+
+  dotenv_values = getattr(dotenv_module, "dotenv_values", None)
+  openai_class = getattr(openai_module, "OpenAI", None)
+  if dotenv_values is None:
+    raise RuntimeError("python-dotenv dotenv_values is unavailable during hook bootstrap")
+  if openai_class is None:
+    raise RuntimeError("openai.OpenAI is unavailable during hook bootstrap")
+  return dotenv_values, openai_class
+
+
+def load_settings(env_path: Path, *, dotenv_values_func: Any | None = None) -> dict[str, str]:
+  if dotenv_values_func is None:
+    dotenv_values_func, _ = load_runtime_dependencies()
+  values = dotenv_values_func(env_path)
   api_key = values.get("OPENAI_API_KEY")
   base_url = values.get("OPENAI_BASE_URL")
   model = values.get("OPENAI_MODEL")
@@ -197,17 +246,104 @@ def build_hook_output(classifications: list[dict[str, Any]]) -> dict[str, Any]:
   return {"continue": True}
 
 
+def run_hook(
+  payload: Any,
+  *,
+  env_path: Path,
+  script_path: Path,
+  client_factory: Any = None,
+  stderr: Any = sys.stderr,
+) -> tuple[dict[str, Any] | None, int]:
+  log_path = get_log_path(script_path)
+  payload_is_dict = isinstance(payload, dict)
+  try_append_log_event(
+    log_path,
+    "hook_start",
+    stderr=stderr,
+    payload_type=type(payload).__name__,
+    hook_event_name=payload.get("hook_event_name") if payload_is_dict else None,
+    payload_keys=sorted(payload.keys()) if payload_is_dict else [],
+    has_last_assistant_message=payload_is_dict and isinstance(payload.get("last_assistant_message"), str),
+    last_assistant_message_length=len(payload.get("last_assistant_message", "")) if payload_is_dict and isinstance(payload.get("last_assistant_message"), str) else 0,
+  )
+
+  try:
+    if not payload_is_dict:
+      raise RuntimeError("Stop payload must be a JSON object")
+    message = extract_last_assistant_message(payload)
+    dotenv_values_func, openai_client_factory = load_runtime_dependencies()
+    settings = load_settings(env_path, dotenv_values_func=dotenv_values_func)
+    try_append_log_event(
+      log_path,
+      "settings_loaded",
+      stderr=stderr,
+      env_path=str(env_path),
+      base_url=settings["base_url"],
+      model=settings["model"],
+      last_assistant_message_length=len(message),
+    )
+    if client_factory is None:
+      client_factory = openai_client_factory
+    client = client_factory(api_key=settings["api_key"], base_url=settings["base_url"])
+    classifications: list[dict[str, Any]] = []
+    for classifier_id, classifier_definition in CLASSIFIER_DEFINITIONS.items():
+      result = classify_last_message(client, settings, classifier_definition, message)
+      classifications.append(result)
+      try_append_log_event(
+        log_path,
+        "classifier_result",
+        stderr=stderr,
+        classifier_id=classifier_id,
+        is_match=result.get("is_match"),
+        version=result.get("version"),
+        milestone_id=result.get("milestone_id"),
+      )
+    output = build_hook_output(classifications)
+    try_append_log_event(
+      log_path,
+      "hook_success",
+      stderr=stderr,
+      has_system_message="systemMessage" in output,
+      system_message=output.get("systemMessage"),
+    )
+    return output, 0
+  except Exception as exc:
+    try_append_log_event(
+      log_path,
+      "hook_failure",
+      stderr=stderr,
+      error_type=type(exc).__name__,
+      error_message=str(exc),
+      traceback=traceback.format_exc(),
+    )
+    print(f"Stop hook failed. See {log_path}", file=stderr)
+    return None, 1
+
+
 def main() -> int:
-  payload = json.load(sys.stdin)
-  message = extract_last_assistant_message(payload)
-  settings = load_settings(Path(__file__).with_name(".env"))
-  client = OpenAI(api_key=settings["api_key"], base_url=settings["base_url"])
-  classifications = [
-    classify_last_message(client, settings, classifier_definition, message)
-    for classifier_definition in CLASSIFIER_DEFINITIONS.values()
-  ]
-  json.dump(build_hook_output(classifications), sys.stdout, ensure_ascii=False)
-  return 0
+  script_path = Path(__file__)
+  log_path = get_log_path(script_path)
+  try:
+    payload = json.load(sys.stdin)
+  except Exception as exc:
+    try_append_log_event(
+      log_path,
+      "payload_parse_failure",
+      stderr=sys.stderr,
+      error_type=type(exc).__name__,
+      error_message=str(exc),
+      traceback=traceback.format_exc(),
+    )
+    print(f"Stop hook failed. See {log_path}", file=sys.stderr)
+    return 1
+  output, exit_code = run_hook(
+    payload,
+    env_path=script_path.with_name(".env"),
+    script_path=script_path,
+  )
+  if output is not None:
+    json.dump(output, sys.stdout, ensure_ascii=False)
+  return exit_code
 
 
 if __name__ == "__main__":

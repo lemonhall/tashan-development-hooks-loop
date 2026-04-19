@@ -37,6 +37,7 @@
 - `v1` 只做“显示固定提示语”，不做自动 continuation 注入。
 - Python 脚本不内联真实密钥，改为读取脚本同级目录 `.env`。
 - 仓库必须忽略真实 `.env`，并提供 `.env.example` 占位模板。
+- Hook 失败时必须留下本地诊断日志，不能只给一个黑盒 `exit 1`。
 - 用户尚未提供“整个 `v` 系列代码全部完成”的现成样本，因此 `v1` 自身必须拆成至少 3 个 `M`，让开发过程自然产出三类 stop 样本。
 
 官方参考：
@@ -142,34 +143,45 @@
    - `OPENAI_BASE_URL`
    - `OPENAI_MODEL`
    - 其中 `OPENAI_BASE_URL` 允许是 provider root、标准 `/v1` base，或误贴的 `/v1/responses` 预览 URL；hook 需先规范化到 `/v1`
-5. 使用 `openai` Python SDK 调 `Responses API`。
-6. Hook 加载 classifier registry。
-7. `v1` registry 至少包含两个 classifier：
+5. 以运行期 bootstrap 方式加载 `dotenv` / `openai` 依赖；若命中 `sys.modules[...] = None` 之类的半初始化哨兵状态，先清理并重试导入。
+6. 使用 `openai` Python SDK 调 `Responses API`。
+7. Hook 加载 classifier registry。
+8. `v1` registry 至少包含两个 classifier：
    - `v_doc_writing_done`
    - `v_milestone_done`
    - `v_task_fully_done`
-8. 对每个 classifier：
+9. 对每个 classifier：
    - 使用该 classifier 的系统提示词；
    - 用户输入只包含 `last_assistant_message`；
    - 调一次 `Responses API`；
    - 要求输出统一 JSON。
    - 响应解析层需兼容标准 SDK `output_text`，以及供应商返回的 raw SSE string；必要时从 `response.output_text.done` / `response.output_text.delta` 事件提取最终文本。
-9. 统一 JSON 字段：
+10. 统一 JSON 字段：
    - `classifier_id: string`
    - `is_match: boolean`
    - `version: string | null`
    - `milestone_id: string | null`
    - `reason: string`
-10. Hook 聚合全部 classifier 结果。
-11. 若多个 classifier 同时命中，按优先级选择一个输出：
+11. Hook 聚合全部 classifier 结果。
+12. 若多个 classifier 同时命中，按优先级选择一个输出：
    - `v_task_fully_done`
    - `v_milestone_done`
    - `v_doc_writing_done`
-12. 分支消息：
+13. 分支消息：
    - `v_doc_writing_done`: `hello World from hooks, on stop event, and v docs have done`
    - `v_milestone_done`: `hello World from hooks, on stop event, and v milestone has done`
    - `v_task_fully_done`: `hello World from hooks, on stop event, and v task has done`
-13. 若全部 classifier 的 `is_match=false`，静默放行，不显示该消息。
+14. 若全部 classifier 的 `is_match=false`，静默放行，不显示该消息。
+15. Hook 以脚本同级 `stop_v_task_classifier.log` 追加 JSONL 诊断事件。
+16. 诊断日志至少覆盖：
+    - hook 启动
+    - payload 类型 / keys
+    - settings 已加载
+    - classifier 结果
+    - payload 解析失败或运行时异常的类型 / message / traceback
+    - 第三方依赖启动期导入失败
+17. stdout 在成功路径仍只输出 hook JSON；若失败，stderr 只输出简短日志路径提示。
+18. 日志为 best-effort；即使日志写入失败，也不应让 hook 因为“诊断子系统故障”而额外失败。
 
 ### Prompt Contract
 
@@ -262,8 +274,12 @@
   - hook 输出生成
 - `hooks/.env.example`
   - 本地配置模板
+- `hooks/stop_v_task_classifier.log`
+  - 本地 JSONL 诊断日志
+  - runtime artifact，git 忽略
 - `.gitignore`
   - 忽略真实 `.env`
+  - 忽略本地 hook 日志
 - `tests/fixtures/stop_payload_doc_done.json`
   - 文档写作完成正例
 - `tests/fixtures/stop_payload_milestone_done.json`
@@ -285,6 +301,7 @@
 - 给一个只表示“还在进行中”的示例 payload，脚本不输出固定提示语；
 - `.env` 不进 git，`.env.example` 存在；
 - 文档里明确写出 Windows 运行风险，而不是假装官方已支持。
+- 给一个失败样例时，stderr 会指向本地日志，且日志足够解释失败边界。
 
 ## Non-Goals
 

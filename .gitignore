@@ -2,3 +2,4 @@
 __pycache__/
 .pytest_cache/
 hooks/.env
+hooks/stop_v_task_classifier.log

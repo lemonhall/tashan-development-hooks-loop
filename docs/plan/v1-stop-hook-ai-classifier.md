@@ -4,7 +4,7 @@
 
 **Goal:** 在 `Codex Stop hook` 中读取 `last_assistant_message`，用 Python `openai` SDK 调 `Responses API` 做三分支二次 AI 分类，并分别处理文档完成、单个 `M` 完成、整个 `v` 完成。
 
-**Architecture:** 一个 Python hook 入口负责 stdin payload、同级 `.env`、classifier registry、Responses API 调用、分支优先级聚合与 hook JSON 输出。`OPENAI_BASE_URL` 允许填 provider root、标准 `/v1` base，或误贴的 `/v1/responses` 预览 URL，hook 统一规范化到 `/v1` 后再交给 Python `openai` SDK。响应解析层同时兼容标准 SDK `output_text` 和供应商 raw SSE string。classifier prompt 在存在 `TASHAN_COMPLETION_SIGNAL` 时优先读取显式信号，缺失时才回退自然语言分类。`v1` 拆成 `M1/M2/M3` 三个里程碑，用开发过程自然产出三类 stop 样本。
+**Architecture:** 一个 Python hook 入口负责 stdin payload、同级 `.env`、classifier registry、Responses API 调用、分支优先级聚合与 hook JSON 输出。`OPENAI_BASE_URL` 允许填 provider root、标准 `/v1` base，或误贴的 `/v1/responses` 预览 URL，hook 统一规范化到 `/v1` 后再交给 Python `openai` SDK。运行期依赖 bootstrap 需先清理 `sys.modules["openai"] = None` / `sys.modules["dotenv"] = None` 之类的半初始化哨兵，再重试导入，避免瞬时 import 污染把后续 hook 永久打死。响应解析层同时兼容标准 SDK `output_text` 和供应商 raw SSE string。classifier prompt 在存在 `TASHAN_COMPLETION_SIGNAL` 时优先读取显式信号，缺失时才回退自然语言分类。`v1` 拆成 `M1/M2/M3` 三个里程碑，用开发过程自然产出三类 stop 样本。
 
 **Tech Stack:** Python 3.13、`openai` Python SDK、`python-dotenv`、`pytest`、Codex `Stop` hook JSON stdin
 
@@ -28,6 +28,9 @@
 - 建立最小 Python 项目骨架
 - 创建 `.gitignore` 和 `hooks/.env.example`
 - 创建 `hooks/stop_v_task_classifier.py`
+- 增加 hook 失败时的本地 JSONL 诊断日志
+- 启动期依赖导入失败也必须进入同一条本地日志链路
+- 启动期如遇 `sys.modules[...] = None` 的可恢复依赖哨兵状态，必须先清理并重试导入
 - 实现三类 classifier：
   - `v_doc_writing_done`
   - `v_milestone_done`
@@ -70,6 +73,7 @@
 - Create: `pyproject.toml`
 - Create: `hooks/.env.example`
 - Create: `hooks/stop_v_task_classifier.py`
+- Runtime artifact: `hooks/stop_v_task_classifier.log`
 - Create: `tests/fixtures/stop_payload_doc_done.json`
 - Create: `tests/fixtures/stop_payload_milestone_done.json`
 - Create: `tests/fixtures/stop_payload_v_task_done.json`
@@ -554,13 +558,16 @@ cd E:\development\tashan-development-hooks-loop ; git add -A ; git commit -m "v1
 - 官方文档截至 `2026-04-19` 仍声明 Windows hooks 暂未支持，真实联调可能受运行时限制影响。
 - 只使用 `last_assistant_message` 做分类输入，语义模糊时仍可能误判。
 - “单个 `M` 完成”和“整个 `v` 完成”的边界需要通过 `M1/M2/M3` 的真实 stop 样本继续校准。
+- 若没有本地诊断日志，`hook exited with code 1` 的调查成本会很高，因此失败路径必须保留 stderr 指针和日志文件。
 
 ## Review Checklist
 
 - [ ] `.gitignore` 忽略真实 `.env`
+- [ ] `.gitignore` 忽略 `hooks/stop_v_task_classifier.log`
 - [ ] `hooks/.env.example` 只包含占位符
 - [ ] `v_doc_writing_done`、`v_milestone_done`、`v_task_fully_done` 三分支都存在
 - [ ] 输出优先级为 `v_task_fully_done > v_milestone_done > v_doc_writing_done`
 - [ ] 测试覆盖文档完成、单个 M 完成、整个 v 完成、仍在进行中、缺失配置
 - [ ] 输出 JSON 无 markdown 包裹
+- [ ] 成功路径 stdout 只输出 hook JSON，失败路径 stderr 指向本地日志
 - [ ] 未把 continuation 注入偷带进 `v1`

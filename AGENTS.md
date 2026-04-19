@@ -25,7 +25,7 @@ All commands are PowerShell commands. Use `;` to chain commands, not `&&`.
 - Run local hook with one fixture:
   `cd E:\development\tashan-development-hooks-loop ; Get-Content -Raw tests\fixtures\stop_payload_doc_done.json | uv run python hooks\stop_v_task_classifier.py`
 - Run the globally installed hook with one fixture:
-  `Get-Content -Raw E:\development\tashan-development-hooks-loop\tests\fixtures\stop_payload_doc_done.json | & C:\Users\lemon\.codex\hooks\stop_v_task_classifier\.venv\Scripts\python.exe C:\Users\lemon\.codex\hooks\stop_v_task_classifier\stop_v_task_classifier.py`
+  `Get-Content -Raw E:\development\tashan-development-hooks-loop\tests\fixtures\stop_payload_doc_done.json | python C:\Users\lemon\.codex\hooks\stop_v_task_classifier\stop_v_task_classifier.py`
 
 ## Architecture Overview
 
@@ -40,6 +40,10 @@ All commands are PowerShell commands. Use `;` to chain commands, not `&&`.
   - `Responses API` call
   - standard SDK response and raw SSE response parsing
   - final hook JSON output
+- `hooks/stop_v_task_classifier.log`
+  - local JSONL diagnostics
+  - gitignored runtime artifact
+  - used for `hook exited with code 1` investigation
 - `hooks/.env.example`
   - safe template for local configuration
 - `hooks/.env`
@@ -51,7 +55,7 @@ All commands are PowerShell commands. Use `;` to chain commands, not `&&`.
 - `scripts/install_global_stop_hook.py`
   - repo-local global install synchronizer
   - file hash comparison
-  - dependency sync trigger
+  - simple hook command writer
   - minimal `hooks.json` mutation
   - optional live smoke
 - `docs/prd/`, `docs/plan/`, `docs/superpowers/specs/`
@@ -88,7 +92,7 @@ C:\Users\lemon\.codex\hooks.json
 Current Stop hook command:
 
 ```text
-"C:\Users\lemon\.codex\hooks\stop_v_task_classifier\.venv\Scripts\python.exe" "C:\Users\lemon\.codex\hooks\stop_v_task_classifier\stop_v_task_classifier.py"
+python "C:\Users\lemon\.codex\hooks\stop_v_task_classifier\stop_v_task_classifier.py"
 ```
 
 Old hook config backup:
@@ -152,6 +156,10 @@ If a message says live smoke, push, merge, remote setup, manual confirmation, or
 - Imports: stdlib, third-party, local.
 - Keep hook stdout clean. stdout must contain only the Codex hook JSON during normal operation.
 - Diagnostic messages, if needed, should go to stderr.
+- File diagnostics belong in `stop_v_task_classifier.log`, not stdout.
+- Logs may include payload shape, normalized base URL, classifier results, and traceback, but must not include secrets or full assistant message bodies.
+- Startup dependency failures should be redirected into the same log path whenever the script can still reach stdlib bootstrap code.
+- Runtime dependency loading must tolerate stale `sys.modules["openai"] = None` / `sys.modules["dotenv"] = None` states by clearing the sentinel and retrying the import before declaring bootstrap failure.
 - Do not add broad frameworks or background services. This is a small hook script.
 
 ## Testing Strategy
@@ -195,6 +203,7 @@ foreach ($fixture in $fixtures) {
 - Keep fixture semantics stable unless the PRD / plan is updated.
 - Do not call work complete without fresh verification evidence.
 - Live smoke tests are real external API calls; do not run them casually in a tight loop.
+- After changing failure handling or logging, verify that the hook leaves a local log file or emits `Stop hook failed. See <log path>` on stderr for a forced failure.
 
 ## Safety & Conventions
 
@@ -204,8 +213,12 @@ foreach ($fixture in $fixtures) {
   - Verify: `git status --short` must not show `hooks/.env`.
 - Do not print secrets.
   - Why: hook logs and terminal history may persist sensitive values.
-  - Do instead: print only key names or redacted values.
+  - Do instead: print only key names or redacted values; log only bounded metadata such as message length, payload keys, and normalized base URL.
   - Verify: scan diffs before committing.
+- Do not commit `hooks/stop_v_task_classifier.log`.
+  - Why: it is a local diagnostic artifact and may contain operational metadata.
+  - Do instead: keep it gitignored and inspect it locally when the Stop hook exits with code `1`.
+  - Verify: `git status --short` must not show `hooks/stop_v_task_classifier.log`.
 - Do not assume all providers return standard SDK `Response` objects.
   - Why: the configured provider may return raw SSE string output.
   - Do instead: preserve `extract_response_text()` and `extract_response_text_from_sse()` compatibility.
@@ -235,9 +248,13 @@ Installer behavior:
 
 - sync only changed files by content hash
 - copy `.env`, but never print it
-- run `uv sync --project <target> --python 3.13` only when `pyproject.toml` or `uv.lock` changed
+- write the Stop command as `python "<hook_script>"`
+- do not run `uv sync` inside the global hook target
+- do not create or depend on `C:\Users\lemon\.codex\hooks\stop_v_task_classifier\.venv`
+- use `py -3.13` only for installer smoke, so local `uv run` does not accidentally resolve back into the repo `.venv`
 - parse `C:\Users\lemon\.codex\hooks.json`
 - do nothing when the correct Stop command already exists
+- replace legacy `.venv` commands for the same `stop_v_task_classifier.py` script instead of leaving duplicates behind
 - replace only the old `hello_world.py` Stop hook when present
 - otherwise add the new Stop hook command without overwriting unrelated Stop hooks
 - back up `hooks.json` only when a real write is needed

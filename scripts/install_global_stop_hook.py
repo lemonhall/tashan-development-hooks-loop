@@ -23,6 +23,7 @@ PROJECT_FILES = {
 DEPENDENCY_FILES = {"pyproject.toml", "uv.lock"}
 DEFAULT_TARGET = Path.home() / ".codex" / "hooks" / "stop_v_task_classifier"
 DEFAULT_HOOKS_JSON = Path.home() / ".codex" / "hooks.json"
+GLOBAL_PYTHON_VERSION = "3.13"
 
 
 @dataclass
@@ -93,9 +94,8 @@ def sync_project_files(source_root: Path, target_root: Path, *, dry_run: bool) -
 
 
 def build_hook_command(target_root: Path) -> str:
-  python_exe = target_root / ".venv" / "Scripts" / "python.exe"
   hook_script = target_root / "stop_v_task_classifier.py"
-  return f'"{python_exe}" "{hook_script}"'
+  return f'python "{hook_script}"'
 
 
 def backup_hooks_json(hooks_json: Path) -> Path:
@@ -143,6 +143,10 @@ def iter_stop_command_hooks(data: dict) -> list[dict]:
   return command_hooks
 
 
+def is_stop_v_task_classifier_command(command: str) -> bool:
+  return "stop_v_task_classifier.py" in command
+
+
 def ensure_hooks_json(
   hooks_json: Path,
   expected_command: str,
@@ -164,8 +168,20 @@ def ensure_hooks_json(
   first_group.setdefault("hooks", [])
 
   command_hooks = iter_stop_command_hooks(data)
-  matching_hook = next((hook for hook in command_hooks if hook.get("command") == expected_command), None)
-  if matching_hook is not None and not force:
+  same_hook_refs: list[tuple[list[dict], int, dict]] = []
+  for group in stop_groups:
+    hooks = group.get("hooks") if isinstance(group, dict) else None
+    if not isinstance(hooks, list):
+      continue
+    for index, hook in enumerate(hooks):
+      if not isinstance(hook, dict) or hook.get("type") != "command":
+        continue
+      command = str(hook.get("command", ""))
+      if is_stop_v_task_classifier_command(command):
+        same_hook_refs.append((hooks, index, hook))
+
+  matching_hook = next((hook for _, _, hook in same_hook_refs if hook.get("command") == expected_command), None)
+  if matching_hook is not None and len(same_hook_refs) == 1 and not force:
     return HooksJsonResult(changed=False, reason="already configured")
 
   hello_world_hook = next(
@@ -173,7 +189,13 @@ def ensure_hooks_json(
     None,
   )
 
-  if hello_world_hook is not None:
+  if same_hook_refs:
+    first_hooks, _, first_hook = same_hook_refs[0]
+    first_hook["command"] = expected_command
+    for hooks, index, _ in reversed(same_hook_refs[1:]):
+      del hooks[index]
+    reason = "updated stop_v_task_classifier stop command hook"
+  elif hello_world_hook is not None:
     hello_world_hook["command"] = expected_command
     reason = "replaced hello_world stop command hook"
   elif force and command_hooks:
@@ -199,18 +221,7 @@ def sync_dependencies_if_needed(
   dry_run: bool,
   runner: Callable[[list[str]], object] | None = None,
 ) -> bool:
-  if not dependency_files_changed:
-    return False
-
-  command = ["uv", "sync", "--project", str(target_root), "--python", "3.13"]
-  if dry_run:
-    return True
-
-  if runner is None:
-    subprocess.run(command, check=True)
-  else:
-    runner(command)
-  return True
+  return False
 
 
 def default_smoke_runner(command: list[str], payload: bytes) -> subprocess.CompletedProcess[bytes]:
@@ -224,13 +235,13 @@ def run_smoke(
   runner: Callable[[list[str], bytes], object] | None = None,
 ) -> dict:
   fixture = source_root / "tests" / "fixtures" / "stop_payload_doc_done.json"
-  python_exe = target_root / ".venv" / "Scripts" / "python.exe"
   hook_script = target_root / "stop_v_task_classifier.py"
   payload = fixture.read_bytes()
+  command = ["py", f"-{GLOBAL_PYTHON_VERSION}", str(hook_script)]
   if runner is None:
-    result = default_smoke_runner([str(python_exe), str(hook_script)], payload)
+    result = default_smoke_runner(command, payload)
   else:
-    result = runner([str(python_exe), str(hook_script)], payload)
+    result = runner(command, payload)
 
   stdout = getattr(result, "stdout", "")
   if isinstance(stdout, bytes):
@@ -260,18 +271,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
   sync_result = sync_project_files(source_root, target_root, dry_run=args.dry_run)
   print(f"Target: {target_root}")
+  print(f"Hook command: {build_hook_command(target_root)}")
   print(f"Copied: {', '.join(sync_result.copied) if sync_result.copied else 'none'}")
   print(f"Unchanged: {', '.join(sync_result.unchanged) if sync_result.unchanged else 'none'}")
   if sync_result.missing:
     print(f"Missing source files: {', '.join(sync_result.missing)}", file=sys.stderr)
     return 1
 
-  dependency_synced = sync_dependencies_if_needed(
+  sync_dependencies_if_needed(
     target_root,
     dependency_files_changed=sync_result.dependency_files_changed,
     dry_run=args.dry_run,
   )
-  print(f"Dependencies: {'sync scheduled' if args.dry_run and sync_result.dependency_files_changed else 'synced' if dependency_synced else 'unchanged'}")
+  print("Dependencies: global Python mode (no target .venv sync)")
 
   hooks_result = ensure_hooks_json(
     hooks_json,

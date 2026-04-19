@@ -46,7 +46,8 @@ If this block is absent, the hook falls back to natural-language classification 
 ├── hooks/
 │   ├── stop_v_task_classifier.py   # Stop hook entrypoint
 │   ├── .env.example                # Safe local config template
-│   └── .env                        # Real local config, ignored by git
+│   ├── .env                        # Real local config, ignored by git
+│   └── stop_v_task_classifier.log  # Local JSONL diagnostics, ignored by git
 ├── tests/
 │   ├── fixtures/                   # Stop payload examples
 │   └── test_stop_v_task_classifier.py
@@ -135,6 +136,31 @@ foreach ($fixture in $fixtures) {
 }
 ```
 
+## Failure Diagnostics
+
+The hook now writes best-effort JSONL diagnostics to:
+
+```text
+E:\development\tashan-development-hooks-loop\hooks\stop_v_task_classifier.log
+```
+
+Key behavior:
+
+- Normal success still writes only the Codex hook JSON to stdout.
+- If the hook exits with code `1`, it writes a short pointer to stderr:
+  - `Stop hook failed. See <log path>`
+- The log captures bounded metadata such as:
+  - hook start
+  - payload type / keys
+  - normalized base URL and model
+  - per-classifier match result
+  - failure type, message, and traceback
+- The log does **not** write `OPENAI_API_KEY` or the full `last_assistant_message` body.
+- JSON parse failures on stdin are also logged, not just downstream API failures.
+- Bootstrap dependency import failures, such as `openai` or `dotenv` breaking before classification starts, are also pulled into the same log file.
+- Runtime dependency loading clears stale `sys.modules["openai"] = None` / `sys.modules["dotenv"] = None` sentinels before retrying the import, so transient half-import state does not permanently brick later hook runs in the same process.
+- Logging is best-effort: if the log file itself cannot be written, the hook reports that on stderr but does not fail solely because diagnostics failed.
+
 ## Global Codex Hook Install
 
 Current global install path on this machine:
@@ -148,8 +174,17 @@ The global copy includes:
 - `stop_v_task_classifier.py`
 - `.env`
 - `.env.example`
+- `stop_v_task_classifier.log` at runtime after the first hook execution
 - `pyproject.toml`
-- `.venv`
+- `uv.lock`
+
+The installed Stop command is intentionally kept minimal:
+
+```text
+python "C:\Users\lemon\.codex\hooks\stop_v_task_classifier\stop_v_task_classifier.py"
+```
+
+It does not use or create a `.venv` inside the global hook directory.
 
 The active global Codex hook config is:
 
@@ -160,7 +195,7 @@ C:\Users\lemon\.codex\hooks.json
 The current Stop command points at:
 
 ```text
-C:\Users\lemon\.codex\hooks\stop_v_task_classifier\.venv\Scripts\python.exe C:\Users\lemon\.codex\hooks\stop_v_task_classifier\stop_v_task_classifier.py
+python "C:\Users\lemon\.codex\hooks\stop_v_task_classifier\stop_v_task_classifier.py"
 ```
 
 Previous global hook config backup:
@@ -170,6 +205,12 @@ C:\Users\lemon\.codex\hooks.json.bak-2026-04-19-stop-v-task
 ```
 
 If Codex does not pick up the new hook immediately, restart Codex so it reloads `hooks.json`.
+
+The global installed hook writes its own diagnostics to:
+
+```text
+C:\Users\lemon\.codex\hooks\stop_v_task_classifier\stop_v_task_classifier.log
+```
 
 ## Reinstall Global Hook
 
@@ -189,10 +230,13 @@ What the installer does:
 
 - syncs only changed files into `C:\Users\lemon\.codex\hooks\stop_v_task_classifier`
 - copies `.env` and `.env.example`
-- compares `pyproject.toml` and `uv.lock`; only runs `uv sync` when dependency files changed
+- writes the Stop command as `python "<hook_script>"`
+- does not run `uv sync` for the global hook target and does not create a target `.venv`
+- uses `py -3.13` only for installer smoke, so `uv run` does not accidentally resolve back into the repo `.venv`
 - parses `C:\Users\lemon\.codex\hooks.json`
 - leaves `hooks.json` untouched when the Stop command is already correct
 - replaces the old `hello_world.py` Stop command when present
+- replaces legacy `.venv` commands for the same `stop_v_task_classifier.py` script instead of leaving duplicates behind
 - adds the correct Stop command without overwriting unrelated Stop commands
 - creates a timestamped `hooks.json` backup only when a real JSON write is required
 
@@ -227,9 +271,7 @@ The parser extracts the final model text from `response.output_text.done`, or fa
 
 At the time this README was written:
 
-- Unit / contract tests: `uv run pytest -q` -> `15 passed`
-- Live fixture smoke against configured provider:
-  - docs fixture -> docs branch message
-  - milestone fixture -> milestone branch message
-  - full-v fixture -> task branch message
-  - not-done fixture -> `{"continue": true}`
+- Unit / contract tests: `uv run pytest -q` -> `29 passed`
+- Global installed hook docs fixture smoke:
+  - output -> `{"continue": true, "systemMessage": "hello World from hooks, on stop event, and v docs have done"}`
+  - log file created / updated at `C:\Users\lemon\.codex\hooks\stop_v_task_classifier\stop_v_task_classifier.log`
