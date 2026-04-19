@@ -94,6 +94,24 @@ Run the test suite:
 cd E:\development\tashan-development-hooks-loop ; uv run pytest -q
 ```
 
+Dry-run the global installer:
+
+```powershell
+cd E:\development\tashan-development-hooks-loop ; uv run python scripts\install_global_stop_hook.py --dry-run
+```
+
+Refresh the global hook install:
+
+```powershell
+cd E:\development\tashan-development-hooks-loop ; uv run python scripts\install_global_stop_hook.py
+```
+
+Refresh the global hook install and run a live docs smoke:
+
+```powershell
+cd E:\development\tashan-development-hooks-loop ; uv run python scripts\install_global_stop_hook.py --smoke
+```
+
 Run one fixture through the local project hook:
 
 ```powershell
@@ -155,19 +173,36 @@ If Codex does not pick up the new hook immediately, restart Codex so it reloads 
 
 ## Reinstall Global Hook
 
-To refresh the global install from this repo:
+Use the repo-local Python installer:
 
 ```powershell
-$target = 'C:\Users\lemon\.codex\hooks\stop_v_task_classifier'
-New-Item -ItemType Directory -Force -Path $target | Out-Null
-Copy-Item -Force 'E:\development\tashan-development-hooks-loop\hooks\stop_v_task_classifier.py' "$target\stop_v_task_classifier.py"
-Copy-Item -Force 'E:\development\tashan-development-hooks-loop\hooks\.env' "$target\.env"
-Copy-Item -Force 'E:\development\tashan-development-hooks-loop\hooks\.env.example' "$target\.env.example"
-Copy-Item -Force 'E:\development\tashan-development-hooks-loop\pyproject.toml' "$target\pyproject.toml"
-uv sync --project $target --python 3.13
+cd E:\development\tashan-development-hooks-loop ; uv run python scripts\install_global_stop_hook.py
 ```
 
-Then ensure `C:\Users\lemon\.codex\hooks.json` points to the global venv command shown above.
+Recommended verification:
+
+```powershell
+cd E:\development\tashan-development-hooks-loop ; uv run python scripts\install_global_stop_hook.py --smoke
+```
+
+What the installer does:
+
+- syncs only changed files into `C:\Users\lemon\.codex\hooks\stop_v_task_classifier`
+- copies `.env` and `.env.example`
+- compares `pyproject.toml` and `uv.lock`; only runs `uv sync` when dependency files changed
+- parses `C:\Users\lemon\.codex\hooks.json`
+- leaves `hooks.json` untouched when the Stop command is already correct
+- replaces the old `hello_world.py` Stop command when present
+- adds the correct Stop command without overwriting unrelated Stop commands
+- creates a timestamped `hooks.json` backup only when a real JSON write is required
+
+Useful options:
+
+```powershell
+cd E:\development\tashan-development-hooks-loop ; uv run python scripts\install_global_stop_hook.py --dry-run
+cd E:\development\tashan-development-hooks-loop ; uv run python scripts\install_global_stop_hook.py --force-hooks-json
+cd E:\development\tashan-development-hooks-loop ; uv run python scripts\install_global_stop_hook.py --target C:\custom\codex\hooks\stop_v_task_classifier --hooks-json C:\custom\codex\hooks.json
+```
 
 ## Provider Response Compatibility
 
@@ -198,4 +233,3 @@ At the time this README was written:
   - milestone fixture -> milestone branch message
   - full-v fixture -> task branch message
   - not-done fixture -> `{"continue": true}`
-

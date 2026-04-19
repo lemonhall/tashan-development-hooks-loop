@@ -16,6 +16,12 @@ All commands are PowerShell commands. Use `;` to chain commands, not `&&`.
   `cd E:\development\tashan-development-hooks-loop ; uv run pytest -q`
 - Run a single test file:
   `cd E:\development\tashan-development-hooks-loop ; uv run pytest tests\test_stop_v_task_classifier.py -q`
+- Run installer dry-run:
+  `cd E:\development\tashan-development-hooks-loop ; uv run python scripts\install_global_stop_hook.py --dry-run`
+- Refresh global hook install:
+  `cd E:\development\tashan-development-hooks-loop ; uv run python scripts\install_global_stop_hook.py`
+- Refresh global hook install and smoke it:
+  `cd E:\development\tashan-development-hooks-loop ; uv run python scripts\install_global_stop_hook.py --smoke`
 - Run local hook with one fixture:
   `cd E:\development\tashan-development-hooks-loop ; Get-Content -Raw tests\fixtures\stop_payload_doc_done.json | uv run python hooks\stop_v_task_classifier.py`
 - Run the globally installed hook with one fixture:
@@ -42,6 +48,12 @@ All commands are PowerShell commands. Use `;` to chain commands, not `&&`.
   - canonical Stop payload samples
 - `tests/test_stop_v_task_classifier.py`
   - unit, contract, parser, and prompt tests
+- `scripts/install_global_stop_hook.py`
+  - repo-local global install synchronizer
+  - file hash comparison
+  - dependency sync trigger
+  - minimal `hooks.json` mutation
+  - optional live smoke
 - `docs/prd/`, `docs/plan/`, `docs/superpowers/specs/`
   - Tashan PRD, plan, and design traceability docs
 
@@ -204,27 +216,36 @@ foreach ($fixture in $fixtures) {
   - Verify: prompt tests and `build_hook_output` tests pass.
 - Do not overwrite the global hook config without a backup.
   - Why: a bad global hook can break every Codex Stop event.
-  - Do instead: copy `C:\Users\lemon\.codex\hooks.json` to a timestamped backup first.
-  - Verify: run the globally installed hook with a fixture.
+  - Do instead: use `scripts/install_global_stop_hook.py`, which only writes `hooks.json` when needed and creates a timestamped backup before writing.
+  - Verify: run the installer with `--smoke` or run the globally installed hook with a fixture.
+- Do not hand-copy the global hook as the normal workflow.
+  - Why: this is how `.env`, `uv.lock`, or `hooks.json` drift gets introduced.
+  - Do instead: use `uv run python scripts\install_global_stop_hook.py`.
+  - Verify: `uv run python scripts\install_global_stop_hook.py --dry-run` shows no unexpected work.
 
 ## Global Install Refresh
 
-To refresh the global installed copy from this repo:
+Use the repo-local installer instead of hand-copying files:
 
 ```powershell
-$target = 'C:\Users\lemon\.codex\hooks\stop_v_task_classifier'
-New-Item -ItemType Directory -Force -Path $target | Out-Null
-Copy-Item -Force 'E:\development\tashan-development-hooks-loop\hooks\stop_v_task_classifier.py' "$target\stop_v_task_classifier.py"
-Copy-Item -Force 'E:\development\tashan-development-hooks-loop\hooks\.env' "$target\.env"
-Copy-Item -Force 'E:\development\tashan-development-hooks-loop\hooks\.env.example' "$target\.env.example"
-Copy-Item -Force 'E:\development\tashan-development-hooks-loop\pyproject.toml' "$target\pyproject.toml"
-uv sync --project $target --python 3.13
+cd E:\development\tashan-development-hooks-loop ; uv run python scripts\install_global_stop_hook.py
 ```
 
-Then verify:
+Installer behavior:
+
+- sync only changed files by content hash
+- copy `.env`, but never print it
+- run `uv sync --project <target> --python 3.13` only when `pyproject.toml` or `uv.lock` changed
+- parse `C:\Users\lemon\.codex\hooks.json`
+- do nothing when the correct Stop command already exists
+- replace only the old `hello_world.py` Stop hook when present
+- otherwise add the new Stop hook command without overwriting unrelated Stop hooks
+- back up `hooks.json` only when a real write is needed
+
+Recommended verification:
 
 ```powershell
-Get-Content -Raw E:\development\tashan-development-hooks-loop\tests\fixtures\stop_payload_doc_done.json | & C:\Users\lemon\.codex\hooks\stop_v_task_classifier\.venv\Scripts\python.exe C:\Users\lemon\.codex\hooks\stop_v_task_classifier\stop_v_task_classifier.py
+cd E:\development\tashan-development-hooks-loop ; uv run python scripts\install_global_stop_hook.py --smoke
 ```
 
 ## Documentation Policy
@@ -246,4 +267,3 @@ Do not let prompt behavior, parser behavior, or install instructions drift from 
 - `AGENTS.override.md` in the same directory overrides `AGENTS.md`.
 - The user's explicit chat instructions always take precedence.
 - Global `~/.codex/AGENTS.md` may add personal defaults, but project-specific rules here govern this repo.
-
