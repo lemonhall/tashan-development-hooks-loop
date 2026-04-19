@@ -79,6 +79,55 @@ def extract_last_assistant_message(payload: dict[str, Any]) -> str:
   return message
 
 
+def extract_response_text_from_sse(response_text: str) -> str:
+  current_event = ""
+  collected_deltas: list[str] = []
+
+  for line in response_text.splitlines():
+    if line.startswith("event: "):
+      current_event = line[len("event: ") :].strip()
+      continue
+    if not line.startswith("data: "):
+      continue
+
+    payload = line[len("data: ") :].strip()
+    if not payload or payload == "[DONE]":
+      continue
+
+    item = json.loads(payload)
+    event_type = str(item.get("type") or current_event)
+
+    if event_type == "response.output_text.done":
+      text = item.get("text")
+      if isinstance(text, str) and text:
+        return text
+
+    if event_type == "response.output_text.delta":
+      delta = item.get("delta")
+      if isinstance(delta, str):
+        collected_deltas.append(delta)
+
+  if collected_deltas:
+    return "".join(collected_deltas)
+
+  raise RuntimeError("Responses API SSE payload did not contain output text")
+
+
+def extract_response_text(response: Any) -> str:
+  if isinstance(response, str):
+    if response.lstrip().startswith("event: "):
+      return extract_response_text_from_sse(response)
+    return response
+
+  output_text = getattr(response, "output_text", None)
+  if isinstance(output_text, str):
+    if output_text.lstrip().startswith("event: "):
+      return extract_response_text_from_sse(output_text)
+    return output_text
+
+  raise RuntimeError("Responses API response did not expose output_text")
+
+
 def normalize_base_url(raw_base_url: str) -> str:
   value = raw_base_url.strip().rstrip("/")
   parsed = urlsplit(value)
@@ -130,7 +179,7 @@ def classify_last_message(
       {"role": "user", "content": message},
     ],
   )
-  result = json.loads(response.output_text)
+  result = json.loads(extract_response_text(response))
   if "classifier_id" not in result or "is_match" not in result:
     raise RuntimeError("Classifier JSON missing classifier_id or is_match")
   return result

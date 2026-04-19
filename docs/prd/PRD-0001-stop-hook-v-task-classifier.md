@@ -104,6 +104,7 @@
 
 - 使用 Python `openai` SDK
 - 发起一次二次模型调用
+- hook 必须兼容标准 SDK `Response` 对象，以及供应商返回 raw SSE string 的情况；只要能从 `response.output_text.done` 或等价事件中提取最终文本即可
 
 **非目标**
 

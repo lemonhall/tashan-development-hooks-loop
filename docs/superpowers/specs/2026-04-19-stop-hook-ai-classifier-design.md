@@ -153,6 +153,7 @@
    - 用户输入只包含 `last_assistant_message`；
    - 调一次 `Responses API`；
    - 要求输出统一 JSON。
+   - 响应解析层需兼容标准 SDK `output_text`，以及供应商返回的 raw SSE string；必要时从 `response.output_text.done` / `response.output_text.delta` 事件提取最终文本。
 9. 统一 JSON 字段：
    - `classifier_id: string`
    - `is_match: boolean`

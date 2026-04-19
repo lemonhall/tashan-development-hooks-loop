@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 
@@ -115,6 +116,19 @@ class FakeClient:
     self.responses = FakeResponsesApi(output_text)
 
 
+def build_sse_response(text: str) -> str:
+  return (
+    "event: response.created\n"
+    'data: {"type":"response.created"}\n'
+    "event: response.output_text.delta\n"
+    f'data: {json.dumps({"type": "response.output_text.delta", "delta": text[:10]})}\n'
+    "event: response.output_text.done\n"
+    f'data: {json.dumps({"type": "response.output_text.done", "text": text})}\n'
+    "event: response.completed\n"
+    'data: {"type":"response.completed"}\n'
+  )
+
+
 def test_load_settings_reads_env_file(tmp_path: Path):
   from hooks.stop_v_task_classifier import load_settings
 
@@ -181,6 +195,26 @@ def test_classify_last_message_parses_json():
 
   client = FakeClient(
     '{"classifier_id": "v_task_fully_done", "is_match": true, "version": "v1", "milestone_id": null, "reason": "full v done"}'
+  )
+
+  result = classify_last_message(
+    client,
+    {"model": "gpt-test"},
+    CLASSIFIER_DEFINITIONS["v_task_fully_done"],
+    "v1 已全部完成",
+  )
+
+  assert result["classifier_id"] == "v_task_fully_done"
+  assert result["is_match"] is True
+
+
+def test_classify_last_message_parses_sse_string_response():
+  from hooks.stop_v_task_classifier import CLASSIFIER_DEFINITIONS, classify_last_message
+
+  client = FakeClient(
+    build_sse_response(
+      '{"classifier_id": "v_task_fully_done", "is_match": true, "version": "v1", "milestone_id": null, "reason": "full v done"}'
+    )
   )
 
   result = classify_last_message(
