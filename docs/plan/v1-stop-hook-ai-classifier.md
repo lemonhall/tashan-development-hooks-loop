@@ -4,7 +4,7 @@
 
 **Goal:** 在 `Codex Stop hook` 中读取 `last_assistant_message`，用 Python `openai` SDK 调 `Responses API` 做三分支二次 AI 分类，并分别处理文档完成、单个 `M` 完成、整个 `v` 完成。
 
-**Architecture:** 一个 Python hook 入口负责 stdin payload、同级 `.env`、classifier registry、Responses API 调用、分支优先级聚合与 hook JSON 输出。classifier prompt 在存在 `TASHAN_COMPLETION_SIGNAL` 时优先读取显式信号，缺失时才回退自然语言分类。`v1` 拆成 `M1/M2/M3` 三个里程碑，用开发过程自然产出三类 stop 样本。
+**Architecture:** 一个 Python hook 入口负责 stdin payload、同级 `.env`、classifier registry、Responses API 调用、分支优先级聚合与 hook JSON 输出。`OPENAI_BASE_URL` 允许填 provider root、标准 `/v1` base，或误贴的 `/v1/responses` 预览 URL，hook 统一规范化到 `/v1` 后再交给 Python `openai` SDK。classifier prompt 在存在 `TASHAN_COMPLETION_SIGNAL` 时优先读取显式信号，缺失时才回退自然语言分类。`v1` 拆成 `M1/M2/M3` 三个里程碑，用开发过程自然产出三类 stop 样本。
 
 **Tech Stack:** Python 3.13、`openai` Python SDK、`python-dotenv`、`pytest`、Codex `Stop` hook JSON stdin
 

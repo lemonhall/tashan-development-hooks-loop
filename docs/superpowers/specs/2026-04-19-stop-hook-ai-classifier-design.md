@@ -141,6 +141,7 @@
    - `OPENAI_API_KEY`
    - `OPENAI_BASE_URL`
    - `OPENAI_MODEL`
+   - 其中 `OPENAI_BASE_URL` 允许是 provider root、标准 `/v1` base，或误贴的 `/v1/responses` 预览 URL；hook 需先规范化到 `/v1`
 5. 使用 `openai` Python SDK 调 `Responses API`。
 6. Hook 加载 classifier registry。
 7. `v1` registry 至少包含两个 classifier：

@@ -250,6 +250,7 @@ Hook 后续逻辑必须可程序解析，不能靠自然语言再猜一次。
   - `OPENAI_API_KEY`
   - `OPENAI_BASE_URL`
   - `OPENAI_MODEL`
+- `OPENAI_BASE_URL` 允许填写 provider root、标准 `/v1` base，或误贴的 `/v1/responses` 预览 URL；hook 必须规范化为可供 Python `openai` SDK `Responses API` 使用的 `/v1` base URL
 
 **非目标**
 
@@ -260,6 +261,7 @@ Hook 后续逻辑必须可程序解析，不能靠自然语言再猜一次。
 
 - `.env` 缺失或字段缺失时，脚本必须给出明确错误
 - `.env` 正常时，脚本能读取到三个必要字段
+- 当 `.env` 中的 `OPENAI_BASE_URL` 为 `https://www.right.codes/codex` 时，hook 规范化后必须对 `Responses API` 使用 `https://www.right.codes/codex/v1`
 
 ### REQ-0001-009：仓库必须忽略真实 `.env`
 

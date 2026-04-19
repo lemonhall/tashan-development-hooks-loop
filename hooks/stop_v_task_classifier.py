@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import dotenv_values
 from openai import OpenAI
@@ -78,6 +79,21 @@ def extract_last_assistant_message(payload: dict[str, Any]) -> str:
   return message
 
 
+def normalize_base_url(raw_base_url: str) -> str:
+  value = raw_base_url.strip().rstrip("/")
+  parsed = urlsplit(value)
+  if not parsed.scheme or not parsed.netloc:
+    raise RuntimeError("OPENAI_BASE_URL must be an absolute URL")
+
+  path = parsed.path.rstrip("/")
+  if path.endswith("/responses"):
+    path = path[: -len("/responses")]
+  if not path.endswith("/v1"):
+    path = f"{path}/v1" if path else "/v1"
+
+  return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
 def load_settings(env_path: Path) -> dict[str, str]:
   values = dotenv_values(env_path)
   api_key = values.get("OPENAI_API_KEY")
@@ -96,7 +112,7 @@ def load_settings(env_path: Path) -> dict[str, str]:
     raise RuntimeError(f"Missing required .env keys: {', '.join(missing)}")
   return {
     "api_key": str(api_key),
-    "base_url": str(base_url),
+    "base_url": normalize_base_url(str(base_url)),
     "model": str(model),
   }
 

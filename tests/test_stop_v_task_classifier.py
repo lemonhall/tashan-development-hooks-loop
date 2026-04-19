@@ -131,6 +131,34 @@ def test_load_settings_reads_env_file(tmp_path: Path):
   assert settings["model"] == "gpt-test"
 
 
+def test_load_settings_normalizes_base_url_without_v1(tmp_path: Path):
+  from hooks.stop_v_task_classifier import load_settings
+
+  env_file = tmp_path / ".env"
+  env_file.write_text(
+    "OPENAI_API_KEY=test-key\nOPENAI_BASE_URL=https://www.right.codes/codex\nOPENAI_MODEL=gpt-test\n",
+    encoding="utf-8",
+  )
+
+  settings = load_settings(env_file)
+
+  assert settings["base_url"] == "https://www.right.codes/codex/v1"
+
+
+def test_load_settings_normalizes_responses_preview_url(tmp_path: Path):
+  from hooks.stop_v_task_classifier import load_settings
+
+  env_file = tmp_path / ".env"
+  env_file.write_text(
+    "OPENAI_API_KEY=test-key\nOPENAI_BASE_URL=https://www.right.codes/codex/v1/responses\nOPENAI_MODEL=gpt-test\n",
+    encoding="utf-8",
+  )
+
+  settings = load_settings(env_file)
+
+  assert settings["base_url"] == "https://www.right.codes/codex/v1"
+
+
 def test_classifier_definitions_include_full_v_done():
   from hooks.stop_v_task_classifier import CLASSIFIER_DEFINITIONS
 
