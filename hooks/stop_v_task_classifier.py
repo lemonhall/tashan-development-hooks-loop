@@ -15,32 +15,51 @@ BRANCH_MESSAGES = {
   "v_task_fully_done": "hello World from hooks, on stop event, and v task has done",
 }
 
+COMPLETION_SIGNAL_RULES = """If the message contains a machine-readable completion signal block with exact markers:
+TASHAN_COMPLETION_SIGNAL_BEGIN
+...
+TASHAN_COMPLETION_SIGNAL_END
+treat that block as the highest-priority evidence.
+The signal block uses keys including tashan_version, tashan_status, tashan_milestone, and tashan_verdict.
+If the signal block is present and tashan_verdict is not done, return false.
+If the signal block is present and tashan_status belongs to another classifier, return false.
+If no signal block is present, fall back to natural-language classification of the full message."""
+
 CLASSIFIER_DEFINITIONS = {
   "v_doc_writing_done": {
-    "prompt": """You are a strict classifier for a Codex Stop hook.
+    "prompt": f"""You are a strict classifier for a Codex Stop hook.
 Decide whether the assistant's final message explicitly indicates that the documentation-writing phase for a v-series task has been completed.
 Return only one JSON object with keys: classifier_id, is_match, version, milestone_id, reason.
 classifier_id must be v_doc_writing_done.
+{COMPLETION_SIGNAL_RULES}
+Return true immediately when the signal block is present with tashan_status=v_doc_writing_done and tashan_verdict=done.
+When matching from the signal block, copy tashan_version into version when available, and use milestone_id=null unless the message explicitly provides one.
 Return true only when the message clearly states the docs were written, saved, or landed, often with concrete artifacts such as PRD, plan, spec, or file paths.
 Also return true when the message clearly says the docs were revised, written back, updated into specific files, or changed documents are already landed, even if implementation is described as the next step.
 You may infer version from explicit versioned document file names or paths such as v1-index.md or v25-*.md.
 If the message is only planning, drafting, or asking for review before docs are written, return false.""",
   },
   "v_milestone_done": {
-    "prompt": """You are a strict classifier for a Codex Stop hook.
+    "prompt": f"""You are a strict classifier for a Codex Stop hook.
 Decide whether the assistant's final message explicitly indicates that one milestone M inside a v-series task has been completed.
 Return only one JSON object with keys: classifier_id, is_match, version, milestone_id, reason.
 classifier_id must be v_milestone_done.
+{COMPLETION_SIGNAL_RULES}
+Return true immediately when the signal block is present with tashan_status=v_milestone_done and tashan_verdict=done.
+When matching from the signal block, copy tashan_version into version and copy tashan_milestone into milestone_id unless it is none.
 Return true when the message clearly states M1, M2, M3, or another milestone inside vN is complete, even if the full vN is not complete.
 Return false if the message only lists milestone names, describes milestone planning, or says implementation will proceed by milestones without explicitly saying one milestone has already completed.
 Return false if the message only says work is in progress or does not identify a completed milestone.""",
   },
   "v_task_fully_done": {
-    "prompt": """You are a strict classifier for a Codex Stop hook.
+    "prompt": f"""You are a strict classifier for a Codex Stop hook.
 Decide whether the assistant's final message explicitly indicates that an entire v-series task has been fully completed.
 Return only one JSON object with keys: classifier_id, is_match, version, milestone_id, reason.
 classifier_id must be v_task_fully_done.
+{COMPLETION_SIGNAL_RULES}
+Return true immediately when the signal block is present with tashan_status=v_task_fully_done and tashan_verdict=done.
 Return true only if the message clearly indicates the whole vN scope is complete.
+If the message says there is still live smoke, push, merge, remote setup, manual confirmation, or another remaining tail step, return false.
 If the message only says one milestone M is done, part of the code is done, docs are done, or more implementation/testing/verification remains, return false.""",
   },
 }

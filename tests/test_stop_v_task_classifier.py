@@ -49,6 +49,21 @@ def test_classifier_definitions_include_milestone_done():
   assert "v_milestone_done" in CLASSIFIER_DEFINITIONS
 
 
+def test_classifier_prompts_support_tashan_completion_signal():
+  from hooks.stop_v_task_classifier import CLASSIFIER_DEFINITIONS
+
+  for classifier_id in [
+    "v_doc_writing_done",
+    "v_milestone_done",
+    "v_task_fully_done",
+  ]:
+    prompt = CLASSIFIER_DEFINITIONS[classifier_id]["prompt"]
+    assert "TASHAN_COMPLETION_SIGNAL_BEGIN" in prompt
+    assert "TASHAN_COMPLETION_SIGNAL_END" in prompt
+    assert "tashan_status" in prompt
+    assert "signal" in prompt.lower()
+
+
 def test_build_hook_output_returns_milestone_message_for_m_done():
   from hooks.stop_v_task_classifier import build_hook_output
 
@@ -120,6 +135,17 @@ def test_classifier_definitions_include_full_v_done():
   from hooks.stop_v_task_classifier import CLASSIFIER_DEFINITIONS
 
   assert "v_task_fully_done" in CLASSIFIER_DEFINITIONS
+
+
+def test_full_v_prompt_rejects_remaining_tail_work():
+  from hooks.stop_v_task_classifier import CLASSIFIER_DEFINITIONS
+
+  prompt = CLASSIFIER_DEFINITIONS["v_task_fully_done"]["prompt"].lower()
+
+  assert "live smoke" in prompt
+  assert "push" in prompt
+  assert "merge" in prompt
+  assert "return false" in prompt
 
 
 def test_classify_last_message_parses_json():

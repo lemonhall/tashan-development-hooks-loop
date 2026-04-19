@@ -41,6 +41,7 @@
 - 读取 `Stop` payload 中的 `last_assistant_message`
 - 用 Python `openai` SDK 调 `Responses API`
 - 用多套固定提示词做多目标分类判定
+- classifier prompt 在存在显式 `TASHAN_COMPLETION_SIGNAL` 时必须优先读取该信号；缺失时才回退自然语言语义
 - `v1` 至少同时支持：
   - `v_doc_writing_done`
   - `v_milestone_done`
@@ -123,6 +124,7 @@ Hook 后续逻辑必须可程序解析，不能靠自然语言再猜一次。
 **范围**
 
 - 提示词要求模型只输出一个 JSON 对象
+- 若 `last_assistant_message` 中存在 `TASHAN_COMPLETION_SIGNAL_BEGIN ... TASHAN_COMPLETION_SIGNAL_END` 显式信号块，classifier 必须优先按该信号块判定
 - JSON 至少包含：
   - `classifier_id`
   - `is_match`
@@ -131,6 +133,7 @@ Hook 后续逻辑必须可程序解析，不能靠自然语言再猜一次。
   - `reason`
 - `v_doc_writing_done` classifier 允许根据显式版本化文档路径或文件名推断 `version`
 - `v_milestone_done` classifier 必须把“只是在规划或列出 M1/M2/M3”与“某个 M 已完成”区分开
+- 若显式信号块与自然语言语义冲突，以显式信号块为准
 
 **非目标**
 
@@ -194,6 +197,7 @@ Hook 后续逻辑必须可程序解析，不能靠自然语言再猜一次。
 **范围**
 
 - `v_task_fully_done` classifier 必须把“只完成一个 `M`”判为 `false`
+- `v_task_fully_done` classifier 必须把“只差 live smoke / push / merge / remote 配置 / 人工确认”等尾项未闭合的回复判为 `false`
 - 只有明确表明整个 `vN` 范围都完成时，才允许判为 `true`
 
 **非目标**

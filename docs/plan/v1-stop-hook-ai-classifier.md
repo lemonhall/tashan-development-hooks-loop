@@ -4,7 +4,7 @@
 
 **Goal:** 在 `Codex Stop hook` 中读取 `last_assistant_message`，用 Python `openai` SDK 调 `Responses API` 做三分支二次 AI 分类，并分别处理文档完成、单个 `M` 完成、整个 `v` 完成。
 
-**Architecture:** 一个 Python hook 入口负责 stdin payload、同级 `.env`、classifier registry、Responses API 调用、分支优先级聚合与 hook JSON 输出。`v1` 拆成 `M1/M2/M3` 三个里程碑，用开发过程自然产出三类 stop 样本。
+**Architecture:** 一个 Python hook 入口负责 stdin payload、同级 `.env`、classifier registry、Responses API 调用、分支优先级聚合与 hook JSON 输出。classifier prompt 在存在 `TASHAN_COMPLETION_SIGNAL` 时优先读取显式信号，缺失时才回退自然语言分类。`v1` 拆成 `M1/M2/M3` 三个里程碑，用开发过程自然产出三类 stop 样本。
 
 **Tech Stack:** Python 3.13、`openai` Python SDK、`python-dotenv`、`pytest`、Codex `Stop` hook JSON stdin
 
@@ -57,6 +57,12 @@
   `hello World from hooks, on stop event, and v milestone has done`
 - `v_task_fully_done`:
   `hello World from hooks, on stop event, and v task has done`
+
+## Prompt Rules
+
+- 若最终回复中存在 `TASHAN_COMPLETION_SIGNAL_BEGIN ... TASHAN_COMPLETION_SIGNAL_END`，classifier 必须优先按该显式信号块判定。
+- 若显式信号块缺失，classifier 才能回退到自然语言语义分类。
+- `v_task_fully_done` 对“还差 live smoke / push / merge / remote setup / 人工确认”等尾项未闭合场景必须返回 `false`。
 
 ## Files
 
