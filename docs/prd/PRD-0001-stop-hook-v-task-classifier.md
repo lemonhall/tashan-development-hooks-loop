@@ -15,13 +15,13 @@
 - 某个 `v` 系列任务下面的单个 `M` 已完成；
 - 或某个 `v` 系列任务整体已完成；
 
-若任一命中，则显示固定提示语，从而为后续 continuation 自动插入打下稳定基础。
+若任一命中，则按分支返回固定 hook 输出；其中“文档写作完成”分支直接触发 continuation prompt 注入，让 Codex 自动进入文档 review 再落地实现的下一步。
 
 成功长相：
 
 - “完成”不是字符串拍脑袋判断，而是由单独的分类模型负责；
 - `v1` 不是单一分类器，而是至少支持三类完成判定；
-- 当前闭环只显示固定提示语，不额外扩 scope；
+- 当前闭环至少要把“文档写作完成”分支接到 continuation prompt；
 - 真实密钥不进入 git；
 - 文档对官方 Windows 风险保持显式、诚实。
 
@@ -46,7 +46,7 @@
   - `v_doc_writing_done`
   - `v_milestone_done`
   - `v_task_fully_done`
-- 若任一目标判定完成，返回对应分支提示语
+- 若任一目标判定完成，返回对应分支输出；其中 `v_doc_writing_done` 返回官方 Stop continuation 结构的 `decision="block"` 与 `reason`
 - `v1` 自身拆成至少 3 个 `M`，用于在开发过程中收集三类 stop 样本
 - 使用同级 `.env`
 - 要求 `.gitignore` 忽略真实 `.env`
@@ -55,10 +55,9 @@
 
 ## Non-Goals
 
-- 不做 continuation 自动插入用户提示词
 - 不做 transcript 全量分析
 - 不做多模型投票
-- 不做 hook 递归控制
+- 不做 hook 防重入 / 防循环状态机
 - 不解决官方 Windows hooks 支持状态
 
 ## 术语
@@ -106,6 +105,7 @@
 - 使用 Python `openai` SDK
 - 发起一次二次模型调用
 - hook 必须兼容标准 SDK `Response` 对象，以及供应商返回 raw SSE string 的情况；只要能从 `response.output_text.done` 或等价事件中提取最终文本即可
+- 若供应商对 `/responses` 返回 `200` 但 body 为空，hook 必须显式判定为 provider compatibility failure，不能只抛裸 `JSONDecodeError`
 - hook 启动期加载 `openai` / `dotenv` 依赖时，若命中 `sys.modules[...] = None` 之类的半初始化哨兵状态，必须先清理并重试导入，再决定是否判定为 bootstrap failure
 
 **非目标**
@@ -219,7 +219,7 @@ Hook 后续逻辑必须可程序解析，不能靠自然语言再猜一次。
 
 **范围**
 
-- 当任一 classifier 的 `is_match=true` 时，返回对应分支的 `systemMessage`
+- 当任一 classifier 的 `is_match=true` 时，返回对应分支输出
 - 若多个 classifier 同时命中，优先级为：
   - `v_task_fully_done`
   - `v_milestone_done`
@@ -227,13 +227,12 @@ Hook 后续逻辑必须可程序解析，不能靠自然语言再猜一次。
 
 **非目标**
 
-- 不做 continuation block / reason 注入
 - 不做多语言消息模板
 
 **验收口径**
 
 - 文档完成正例返回：
-  `hello World from hooks, on stop event, and v docs have done`
+  `{"continue": true, "decision": "block", "reason": "<docs review continuation prompt>"}`
 - 里程碑完成正例返回：
   `hello World from hooks, on stop event, and v milestone has done`
 - 整体 `v` 完成正例返回：
@@ -346,7 +345,7 @@ Hook 后续逻辑必须可程序解析，不能靠自然语言再猜一次。
 
 ## Success Metrics
 
-- 给一个明确表示文档写作完成的示例 payload，脚本输出 docs 分支提示语。
+- 给一个明确表示文档写作完成的示例 payload，脚本输出 docs 分支 continuation JSON。
 - 给一个明确表示单个 `M` 完成的示例 payload，脚本输出 milestone 分支提示语。
 - 给一个明确表示整个 `v` 系列已完成的示例 payload，脚本输出 task 分支提示语。
 - 给一个明确只表示某个 `M` 完成的示例 payload，full-v 分类器不得误判为整个 `v` 系列已完成。
@@ -370,6 +369,5 @@ Hook 后续逻辑必须可程序解析，不能靠自然语言再猜一次。
 以下内容明确不纳入 `v1`，但可进入后续版本：
 
 - transcript tail 作为额外上下文
-- continuation 自动注入用户提示词
 - 防重入 / 防循环控制
 - 多模型交叉校验

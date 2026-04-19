@@ -5,6 +5,7 @@
 **Goal:** 在 `Codex Stop hook` 中读取 `last_assistant_message`，用 Python `openai` SDK 调 `Responses API` 做三分支二次 AI 分类，并分别处理文档完成、单个 `M` 完成、整个 `v` 完成。
 
 **Architecture:** 一个 Python hook 入口负责 stdin payload、同级 `.env`、classifier registry、Responses API 调用、分支优先级聚合与 hook JSON 输出。`OPENAI_BASE_URL` 允许填 provider root、标准 `/v1` base，或误贴的 `/v1/responses` 预览 URL，hook 统一规范化到 `/v1` 后再交给 Python `openai` SDK。运行期依赖 bootstrap 需先清理 `sys.modules["openai"] = None` / `sys.modules["dotenv"] = None` 之类的半初始化哨兵，再重试导入，避免瞬时 import 污染把后续 hook 永久打死。响应解析层同时兼容标准 SDK `output_text` 和供应商 raw SSE string。classifier prompt 在存在 `TASHAN_COMPLETION_SIGNAL` 时优先读取显式信号，缺失时才回退自然语言分类。`v1` 拆成 `M1/M2/M3` 三个里程碑，用开发过程自然产出三类 stop 样本。
+若供应商对 `/responses` 返回 `200` 但 body 为空，hook 需把它视为 provider compatibility failure，并输出明确错误而不是裸 JSON 解析错误。
 
 **Tech Stack:** Python 3.13、`openai` Python SDK、`python-dotenv`、`pytest`、Codex `Stop` hook JSON stdin
 
@@ -47,15 +48,14 @@
 
 ## Non-Goals
 
-- 不做 continuation 自动注入用户提示词
 - 不做 transcript tail 读取
 - 不提交真实 API 凭证
 - 不做 Windows 兼容性补丁
 
-## Branch Messages
+## Branch Outputs
 
 - `v_doc_writing_done`:
-  `hello World from hooks, on stop event, and v docs have done`
+  `{"continue": true, "decision": "block", "reason": "<docs review continuation prompt>"}`
 - `v_milestone_done`:
   `hello World from hooks, on stop event, and v milestone has done`
 - `v_task_fully_done`:
@@ -122,13 +122,14 @@ def test_extract_last_assistant_message_returns_string():
     assert extract_last_assistant_message(payload) == "文档已经写到目标目录了，PRD、v1-index 和 v1 计划都已经落盘。"
 
 
-def test_build_hook_output_returns_docs_message_for_doc_done():
+def test_build_hook_output_returns_docs_block_reason_for_doc_done():
     output = build_hook_output([
         {"classifier_id": "v_doc_writing_done", "is_match": True, "version": "v1", "milestone_id": "M1", "reason": "docs saved"},
     ])
     assert output == {
         "continue": True,
-        "systemMessage": "hello World from hooks, on stop event, and v docs have done",
+        "decision": "block",
+        "reason": DOCS_REVIEW_CONTINUATION_PROMPT,
     }
 ```
 
@@ -189,8 +190,9 @@ from __future__ import annotations
 
 from typing import Any
 
+DOCS_REVIEW_CONTINUATION_PROMPT = "请使用subagent调用与主会话同样的模型，对刚完成的文档做一次完整的业务逻辑上的review，并将返回来的中肯的review意见，由主会话做出修正；如果subagent给出的review意见，属于鸡毛蒜皮，无伤大雅，那么请主会话直接开始下一步的落地实现，不要纠结于文档"
+
 BRANCH_MESSAGES = {
-    "v_doc_writing_done": "hello World from hooks, on stop event, and v docs have done",
     "v_milestone_done": "hello World from hooks, on stop event, and v milestone has done",
     "v_task_fully_done": "hello World from hooks, on stop event, and v task has done",
 }
@@ -217,6 +219,12 @@ def build_hook_output(classifications: list[dict[str, Any]]) -> dict[str, Any]:
     }
     for classifier_id in CLASSIFIER_PRIORITY:
         if classifier_id in matches:
+            if classifier_id == "v_doc_writing_done":
+                return {
+                    "continue": True,
+                    "decision": "block",
+                    "reason": DOCS_REVIEW_CONTINUATION_PROMPT,
+                }
             return {"continue": True, "systemMessage": BRANCH_MESSAGES[classifier_id]}
     return {"continue": True}
 ```
@@ -542,7 +550,7 @@ cd E:\development\tashan-development-hooks-loop ; Get-Content -Raw tests\fixture
 
 Expected:
 
-- doc fixture 输出 docs 分支消息
+- doc fixture 输出 docs 分支 continuation JSON
 - milestone fixture 输出 milestone 分支消息
 - full-v fixture 输出 task 分支消息
 - not-done fixture 输出 `{"continue": true}`
@@ -570,4 +578,4 @@ cd E:\development\tashan-development-hooks-loop ; git add -A ; git commit -m "v1
 - [ ] 测试覆盖文档完成、单个 M 完成、整个 v 完成、仍在进行中、缺失配置
 - [ ] 输出 JSON 无 markdown 包裹
 - [ ] 成功路径 stdout 只输出 hook JSON，失败路径 stderr 指向本地日志
-- [ ] 未把 continuation 注入偷带进 `v1`
+- [ ] docs 分支 continuation prompt 固定且可测试；防重入 / 防循环另开后续版本

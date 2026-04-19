@@ -34,7 +34,7 @@
   - `Codex hooks` 处于 `Experimental`
   - `Windows support temporarily disabled`
 - `v1` 仍只以 `last_assistant_message` 作为分类输入主载体，不引入 transcript 全量分析。
-- `v1` 只做“显示固定提示语”，不做自动 continuation 注入。
+- `v1` 的 docs 分支直接输出官方 Stop continuation JSON；milestone / full-task 分支仍输出固定提示语。
 - Python 脚本不内联真实密钥，改为读取脚本同级目录 `.env`。
 - 仓库必须忽略真实 `.env`，并提供 `.env.example` 占位模板。
 - Hook 失败时必须留下本地诊断日志，不能只给一个黑盒 `exit 1`。
@@ -96,7 +96,7 @@
   - `v_milestone_done`
   - `v_task_fully_done`
 - 每套 classifier 都输出统一 JSON；
-- Hook 聚合结果并决定是否返回固定提示语。
+- Hook 聚合结果并决定返回固定提示语，或在 docs 分支返回 continuation JSON。
 
 优点：
 
@@ -167,8 +167,8 @@
    - `v_task_fully_done`
    - `v_milestone_done`
    - `v_doc_writing_done`
-13. 分支消息：
-   - `v_doc_writing_done`: `hello World from hooks, on stop event, and v docs have done`
+13. 分支输出：
+   - `v_doc_writing_done`: `{"continue": true, "decision": "block", "reason": "<docs review continuation prompt>"}`
    - `v_milestone_done`: `hello World from hooks, on stop event, and v milestone has done`
    - `v_task_fully_done`: `hello World from hooks, on stop event, and v task has done`
 14. 若全部 classifier 的 `is_match=false`，静默放行，不显示该消息。
@@ -178,6 +178,7 @@
     - payload 类型 / keys
     - settings 已加载
     - classifier 结果
+    - `/responses` 返回空 body 时的 provider compatibility failure
     - payload 解析失败或运行时异常的类型 / message / traceback
     - 第三方依赖启动期导入失败
 17. stdout 在成功路径仍只输出 hook JSON；若失败，stderr 只输出简短日志路径提示。
@@ -295,7 +296,7 @@
 
 `v1` 交付完成的最低判断标准：
 
-- 给一个明确表示“文档已经写到目标目录 / PRD 与计划已落盘”的示例 payload，脚本输出固定提示语；
+- 给一个明确表示“文档已经写到目标目录 / PRD 与计划已落盘”的示例 payload，脚本输出 docs continuation JSON；
 - 给一个明确表示“某个 `M` 已完成，但整个 `v` 尚未完成”的示例 payload，脚本输出 milestone 分支提示语；
 - 给一个明确表示“整个 `v25` 全部完成”的示例 payload，脚本输出固定提示语；
 - 给一个只表示“还在进行中”的示例 payload，脚本不输出固定提示语；
@@ -305,9 +306,9 @@
 
 ## Non-Goals
 
-- 不做 continuation 自动插入用户提示词；
 - 不做 transcript 全量读取；
 - 不做多模型投票；
+- 不做防重入 / 防循环状态机；
 - 不做 prompt 自动自修复；
 - 不处理移动端推送或其他通知链。
 

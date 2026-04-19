@@ -16,7 +16,7 @@ The hook currently supports three classifier branches, in priority order:
    - Output: `hello World from hooks, on stop event, and v milestone has done`
 3. `v_doc_writing_done`
    - The PRD / spec / plan documentation phase is complete.
-   - Output: `hello World from hooks, on stop event, and v docs have done`
+   - Output: `decision: "block"` with a `reason` continuation prompt asking Codex to review the finished docs with a same-model subagent, apply substantive review feedback in the main session, or proceed to implementation if the review is trivial.
 
 If nothing matches, the hook returns:
 
@@ -38,6 +38,18 @@ TASHAN_COMPLETION_SIGNAL_END
 ```
 
 If this block is absent, the hook falls back to natural-language classification through the configured model.
+
+## Stop Continuation Behavior
+
+For `v_doc_writing_done`, the hook uses the official Stop-hook continuation shape:
+
+```json
+{
+  "continue": true,
+  "decision": "block",
+  "reason": "请使用subagent调用与主会话同样的模型，对刚完成的文档做一次完整的业务逻辑上的review，并将返回来的中肯的review意见，由主会话做出修正；如果subagent给出的review意见，属于鸡毛蒜皮，无伤大雅，那么请主会话直接开始下一步的落地实现，不要纠结于文档"
+}
+```
 
 ## Project Layout
 
@@ -159,6 +171,7 @@ Key behavior:
 - JSON parse failures on stdin are also logged, not just downstream API failures.
 - Bootstrap dependency import failures, such as `openai` or `dotenv` breaking before classification starts, are also pulled into the same log file.
 - Runtime dependency loading clears stale `sys.modules["openai"] = None` / `sys.modules["dotenv"] = None` sentinels before retrying the import, so transient half-import state does not permanently brick later hook runs in the same process.
+- If a provider returns HTTP success for `/responses` but an empty body, the hook raises an explicit compatibility error instead of a bare `JSONDecodeError`.
 - Logging is best-effort: if the log file itself cannot be written, the hook reports that on stderr but does not fail solely because diagnostics failed.
 
 ## Global Codex Hook Install
@@ -260,6 +273,8 @@ This hook also supports providers that return raw SSE text containing events suc
 
 The parser extracts the final model text from `response.output_text.done`, or falls back to accumulated `response.output_text.delta` chunks.
 
+If a provider returns `200 OK` with an empty `/responses` body, the hook treats that as provider incompatibility with the `Responses API` contract and fails explicitly.
+
 ## Security Notes
 
 - Never commit `hooks/.env` or the copied global `.env`.
@@ -273,5 +288,5 @@ At the time this README was written:
 
 - Unit / contract tests: `uv run pytest -q` -> `29 passed`
 - Global installed hook docs fixture smoke:
-  - output -> `{"continue": true, "systemMessage": "hello World from hooks, on stop event, and v docs have done"}`
+  - output -> `{"continue": true, "decision": "block", "reason": "...docs review continuation prompt..."}`
   - log file created / updated at `C:\Users\lemon\.codex\hooks\stop_v_task_classifier\stop_v_task_classifier.log`

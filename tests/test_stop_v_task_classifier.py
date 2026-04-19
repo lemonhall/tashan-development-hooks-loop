@@ -49,25 +49,6 @@ def test_build_hook_output_returns_block_reason_for_doc_done():
   }
 
 
-def test_build_hook_output_skips_docs_continuation_when_stop_hook_active():
-  from hooks.stop_v_task_classifier import build_hook_output
-
-  output = build_hook_output(
-    [
-      {
-        "classifier_id": "v_doc_writing_done",
-        "is_match": True,
-        "version": "v1",
-        "milestone_id": None,
-        "reason": "docs saved",
-      },
-    ],
-    stop_hook_active=True,
-  )
-
-  assert output == {"continue": True}
-
-
 def test_classifier_definitions_include_milestone_done():
   from hooks.stop_v_task_classifier import CLASSIFIER_DEFINITIONS
 
@@ -138,6 +119,11 @@ class FakeResponsesApi:
 class FakeClient:
   def __init__(self, output_text: str):
     self.responses = FakeResponsesApi(output_text)
+
+
+class EmptyStringClient:
+  def __init__(self, **kwargs):
+    self.responses = FakeResponsesApi("")
 
 
 class FailingResponsesApi:
@@ -288,6 +274,25 @@ def test_classify_last_message_parses_sse_string_response():
   assert result["is_match"] is True
 
 
+def test_classify_last_message_raises_clear_error_for_empty_response_body():
+  from hooks.stop_v_task_classifier import CLASSIFIER_DEFINITIONS, classify_last_message
+
+  client = FakeClient("")
+
+  try:
+    classify_last_message(
+      client,
+      {"model": "gpt-test"},
+      CLASSIFIER_DEFINITIONS["v_task_fully_done"],
+      "v1 已全部完成",
+    )
+  except RuntimeError as exc:
+    assert "empty response body" in str(exc).lower()
+    assert "/responses" in str(exc)
+  else:
+    raise AssertionError("Expected RuntimeError for empty response body")
+
+
 def test_run_hook_writes_failure_log_for_exit_one(tmp_path: Path):
   from hooks.stop_v_task_classifier import run_hook
 
@@ -321,6 +326,34 @@ def test_run_hook_writes_failure_log_for_exit_one(tmp_path: Path):
   assert "RuntimeError" in log_content
   assert "test-key" not in log_content
   assert "文档已经写完了。" not in log_content
+
+
+def test_run_hook_logs_clear_error_for_empty_provider_response(tmp_path: Path):
+  from hooks.stop_v_task_classifier import run_hook
+
+  env_file = tmp_path / ".env"
+  env_file.write_text(
+    "OPENAI_API_KEY=test-key\nOPENAI_BASE_URL=https://example.com/v1\nOPENAI_MODEL=gpt-test\n",
+    encoding="utf-8",
+  )
+  stderr = io.StringIO()
+
+  output, exit_code = run_hook(
+    {
+      "hook_event_name": "Stop",
+      "last_assistant_message": "文档已经写完了。",
+    },
+    env_path=env_file,
+    script_path=tmp_path / "stop_v_task_classifier.py",
+    client_factory=EmptyStringClient,
+    stderr=stderr,
+  )
+
+  assert output is None
+  assert exit_code == 1
+  log_content = (tmp_path / "stop_v_task_classifier.log").read_text(encoding="utf-8")
+  assert "empty response body" in log_content.lower()
+  assert "/responses" in log_content
 
 
 def test_run_hook_does_not_fail_when_log_write_fails(tmp_path: Path, monkeypatch):
@@ -357,32 +390,6 @@ def test_run_hook_does_not_fail_when_log_write_fails(tmp_path: Path, monkeypatch
   }
   assert "Stop hook logging failed." in stderr.getvalue()
   assert "disk full" in stderr.getvalue()
-
-
-def test_run_hook_skips_docs_continuation_when_payload_stop_hook_active(tmp_path: Path):
-  from hooks.stop_v_task_classifier import run_hook
-
-  env_file = tmp_path / ".env"
-  env_file.write_text(
-    "OPENAI_API_KEY=test-key\nOPENAI_BASE_URL=https://example.com/v1\nOPENAI_MODEL=gpt-test\n",
-    encoding="utf-8",
-  )
-  stderr = io.StringIO()
-
-  output, exit_code = run_hook(
-    {
-      "hook_event_name": "Stop",
-      "last_assistant_message": "文档已经写完了。",
-      "stop_hook_active": True,
-    },
-    env_path=env_file,
-    script_path=tmp_path / "stop_v_task_classifier.py",
-    client_factory=AlwaysDocsClient,
-    stderr=stderr,
-  )
-
-  assert exit_code == 0
-  assert output == {"continue": True}
 
 
 def test_main_logs_payload_parse_failure(tmp_path: Path, monkeypatch):

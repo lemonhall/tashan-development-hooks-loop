@@ -20,7 +20,7 @@
 
 | 里程碑 | 范围 | DoD | 验证 | 状态 |
 |---|---|---|---|---|
-| M1: 文档完成分支 | 项目骨架、secrets 边界、`v_doc_writing_done`、文档完成 fixture | 文档写作完成正例命中 docs 分支提示语；一般进行中反例静默放行；`.env` 不进 git | `uv run pytest -q`；`Get-Content -Raw tests\\fixtures\\stop_payload_doc_done.json \| uv run python hooks/stop_v_task_classifier.py` | todo |
+| M1: 文档完成分支 | 项目骨架、secrets 边界、`v_doc_writing_done`、文档完成 fixture | 文档写作完成正例命中 docs 分支 continuation JSON；一般进行中反例静默放行；`.env` 不进 git | `uv run pytest -q`；`Get-Content -Raw tests\\fixtures\\stop_payload_doc_done.json \| uv run python hooks/stop_v_task_classifier.py` | todo |
 | M2: 单个里程碑完成分支 | `v_milestone_done`、milestone fixture、分支输出 | `M2 已完成但 v1 未完成` 正例命中 milestone 分支；full-v 分类不得误判为 true | `uv run pytest -q`；`Get-Content -Raw tests\\fixtures\\stop_payload_milestone_done.json \| uv run python hooks/stop_v_task_classifier.py` | todo |
 | M3: 整体 v 完成分支 | `v_task_fully_done`、优先级聚合、最终 smoke | 整体 `v1` 完成正例命中 task 分支；多分支同时命中时 task 分支优先；四类 fixture 全部通过 | `uv run pytest -q`；`Get-Content -Raw tests\\fixtures\\stop_payload_v_task_done.json \| uv run python hooks/stop_v_task_classifier.py`；`Get-Content -Raw tests\\fixtures\\stop_payload_not_done.json \| uv run python hooks/stop_v_task_classifier.py` | todo |
 

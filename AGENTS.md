@@ -127,9 +127,9 @@ The branch priority is fixed:
 v_task_fully_done > v_milestone_done > v_doc_writing_done
 ```
 
-Branch messages are fixed:
+Branch outputs are fixed:
 
-- `v_doc_writing_done`: `hello World from hooks, on stop event, and v docs have done`
+- `v_doc_writing_done`: return `{"continue": true, "decision": "block", "reason": "<docs review continuation prompt>"}`
 - `v_milestone_done`: `hello World from hooks, on stop event, and v milestone has done`
 - `v_task_fully_done`: `hello World from hooks, on stop event, and v task has done`
 
@@ -160,6 +160,7 @@ If a message says live smoke, push, merge, remote setup, manual confirmation, or
 - Logs may include payload shape, normalized base URL, classifier results, and traceback, but must not include secrets or full assistant message bodies.
 - Startup dependency failures should be redirected into the same log path whenever the script can still reach stdlib bootstrap code.
 - Runtime dependency loading must tolerate stale `sys.modules["openai"] = None` / `sys.modules["dotenv"] = None` states by clearing the sentinel and retrying the import before declaring bootstrap failure.
+- If a provider returns HTTP success for `/responses` but an empty response body, the hook should fail with an explicit provider-compatibility error instead of surfacing a bare JSON decode failure.
 - Do not add broad frameworks or background services. This is a small hook script.
 
 ## Testing Strategy

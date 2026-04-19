@@ -11,10 +11,15 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 BRANCH_MESSAGES = {
-  "v_doc_writing_done": "hello World from hooks, on stop event, and v docs have done",
   "v_milestone_done": "hello World from hooks, on stop event, and v milestone has done",
   "v_task_fully_done": "hello World from hooks, on stop event, and v task has done",
 }
+
+DOCS_REVIEW_CONTINUATION_PROMPT = (
+  "请使用subagent调用与主会话同样的模型，对刚完成的文档做一次完整的业务逻辑上的review，并将返回来的中肯的"
+  "review意见，由主会话做出修正；如果subagent给出的review意见，属于鸡毛蒜皮，无伤大雅，那么请主会话直接开始下一步的"
+  "落地实现，不要纠结于文档"
+)
 
 COMPLETION_SIGNAL_RULES = """If the message contains a machine-readable completion signal block with exact markers:
 TASHAN_COMPLETION_SIGNAL_BEGIN
@@ -228,7 +233,20 @@ def classify_last_message(
       {"role": "user", "content": message},
     ],
   )
-  result = json.loads(extract_response_text(response))
+  raw_text = extract_response_text(response)
+  if not raw_text.strip():
+    raise RuntimeError(
+      "Responses API returned an empty response body for /responses; "
+      "provider may not support the endpoint correctly"
+    )
+  try:
+    result = json.loads(raw_text)
+  except json.JSONDecodeError as exc:
+    preview = raw_text[:200].replace("\r", "\\r").replace("\n", "\\n")
+    raise RuntimeError(
+      "Responses API returned non-JSON output for classifier parsing. "
+      f"preview={preview!r}"
+    ) from exc
   if "classifier_id" not in result or "is_match" not in result:
     raise RuntimeError("Classifier JSON missing classifier_id or is_match")
   return result
@@ -242,6 +260,12 @@ def build_hook_output(classifications: list[dict[str, Any]]) -> dict[str, Any]:
   }
   for classifier_id in CLASSIFIER_PRIORITY:
     if classifier_id in matches:
+      if classifier_id == "v_doc_writing_done":
+        return {
+          "continue": True,
+          "decision": "block",
+          "reason": DOCS_REVIEW_CONTINUATION_PROMPT,
+        }
       return {"continue": True, "systemMessage": BRANCH_MESSAGES[classifier_id]}
   return {"continue": True}
 
@@ -305,6 +329,9 @@ def run_hook(
       stderr=stderr,
       has_system_message="systemMessage" in output,
       system_message=output.get("systemMessage"),
+      decision=output.get("decision"),
+      has_reason="reason" in output,
+      reason_length=len(output.get("reason", "")) if isinstance(output.get("reason"), str) else 0,
     )
     return output, 0
   except Exception as exc:
