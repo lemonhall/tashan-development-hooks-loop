@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import json
+import sys
+from pathlib import Path
 from typing import Any
+
+from dotenv import dotenv_values
+from openai import OpenAI
 
 
 BRANCH_MESSAGES = {
@@ -29,6 +35,14 @@ Return true when the message clearly states M1, M2, M3, or another milestone ins
 Return false if the message only lists milestone names, describes milestone planning, or says implementation will proceed by milestones without explicitly saying one milestone has already completed.
 Return false if the message only says work is in progress or does not identify a completed milestone.""",
   },
+  "v_task_fully_done": {
+    "prompt": """You are a strict classifier for a Codex Stop hook.
+Decide whether the assistant's final message explicitly indicates that an entire v-series task has been fully completed.
+Return only one JSON object with keys: classifier_id, is_match, version, milestone_id, reason.
+classifier_id must be v_task_fully_done.
+Return true only if the message clearly indicates the whole vN scope is complete.
+If the message only says one milestone M is done, part of the code is done, docs are done, or more implementation/testing/verification remains, return false.""",
+  },
 }
 
 CLASSIFIER_PRIORITY = [
@@ -45,6 +59,48 @@ def extract_last_assistant_message(payload: dict[str, Any]) -> str:
   return message
 
 
+def load_settings(env_path: Path) -> dict[str, str]:
+  values = dotenv_values(env_path)
+  api_key = values.get("OPENAI_API_KEY")
+  base_url = values.get("OPENAI_BASE_URL")
+  model = values.get("OPENAI_MODEL")
+  missing = [
+    name
+    for name, value in {
+      "OPENAI_API_KEY": api_key,
+      "OPENAI_BASE_URL": base_url,
+      "OPENAI_MODEL": model,
+    }.items()
+    if not value
+  ]
+  if missing:
+    raise RuntimeError(f"Missing required .env keys: {', '.join(missing)}")
+  return {
+    "api_key": str(api_key),
+    "base_url": str(base_url),
+    "model": str(model),
+  }
+
+
+def classify_last_message(
+  client: Any,
+  settings: dict[str, str],
+  classifier_definition: dict[str, str],
+  message: str,
+) -> dict[str, Any]:
+  response = client.responses.create(
+    model=settings["model"],
+    input=[
+      {"role": "system", "content": classifier_definition["prompt"]},
+      {"role": "user", "content": message},
+    ],
+  )
+  result = json.loads(response.output_text)
+  if "classifier_id" not in result or "is_match" not in result:
+    raise RuntimeError("Classifier JSON missing classifier_id or is_match")
+  return result
+
+
 def build_hook_output(classifications: list[dict[str, Any]]) -> dict[str, Any]:
   matches = {
     item.get("classifier_id"): item
@@ -55,3 +111,20 @@ def build_hook_output(classifications: list[dict[str, Any]]) -> dict[str, Any]:
     if classifier_id in matches:
       return {"continue": True, "systemMessage": BRANCH_MESSAGES[classifier_id]}
   return {"continue": True}
+
+
+def main() -> int:
+  payload = json.load(sys.stdin)
+  message = extract_last_assistant_message(payload)
+  settings = load_settings(Path(__file__).with_name(".env"))
+  client = OpenAI(api_key=settings["api_key"], base_url=settings["base_url"])
+  classifications = [
+    classify_last_message(client, settings, classifier_definition, message)
+    for classifier_definition in CLASSIFIER_DEFINITIONS.values()
+  ]
+  json.dump(build_hook_output(classifications), sys.stdout, ensure_ascii=False)
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())
