@@ -117,6 +117,8 @@ Required keys:
 
 `OPENAI_BASE_URL` accepts provider root, `/v1`, or `/v1/responses` preview URLs. The hook normalizes them to a `/v1` base before calling `client.responses.create(...)`.
 
+If `HOOK_PROVIDER_1_*` exists, the hook must load numbered providers in order and attempt each provider's declared `WIRE_APIS` before failing over to the next provider. If no numbered provider exists, legacy `OPENAI_*` settings remain valid as the single default provider.
+
 Do not replace this behavior with hardcoded provider-specific paths.
 
 ## Classifier Contract
@@ -161,6 +163,8 @@ If a message says live smoke, push, merge, remote setup, manual confirmation, or
 - Startup dependency failures should be redirected into the same log path whenever the script can still reach stdlib bootstrap code.
 - Runtime dependency loading must tolerate stale `sys.modules["openai"] = None` / `sys.modules["dotenv"] = None` states by clearing the sentinel and retrying the import before declaring bootstrap failure.
 - If a provider returns HTTP success for `/responses` but an empty response body, the hook should fail with an explicit provider-compatibility error instead of surfacing a bare JSON decode failure.
+- If provider chain fallback is enabled, attempt logs must record the actual successful `provider_name` and `wire_api`, not placeholder metadata.
+- `chat_completions_stream` currently uses a 180-second HTTP timeout because observed `gpt-5.4` providers may exceed 90 seconds before completing a classifier stream.
 - Do not add broad frameworks or background services. This is a small hook script.
 
 ## Testing Strategy

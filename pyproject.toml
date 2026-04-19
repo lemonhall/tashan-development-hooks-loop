@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Codex stop hook v-task classifier"
 requires-python = ">=3.13"
 dependencies = [
+  "httpx",
   "openai",
   "python-dotenv",
 ]

@@ -313,6 +313,8 @@ if all attempts failed:
 - `provider_chain_failure`
   - 所有 attempt 摘要列表
 
+成功事件必须记录真实命中的 `provider_name` 与 `wire_api`，不得回写占位 provider 元数据。
+
 日志要求：
 
 - 不写出完整 API key

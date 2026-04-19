@@ -315,6 +315,7 @@ name = "tashan-development-hooks-loop"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "openai" },
     { name = "python-dotenv" },
 ]
@@ -326,6 +327,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx" },
     { name = "openai" },
     { name = "python-dotenv" },
 ]

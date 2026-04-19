@@ -89,6 +89,19 @@ OPENAI_MODEL=gpt-5-mini
 
 The hook normalizes all of them to a `Responses API`-compatible `/v1` base before calling `client.responses.create(...)`.
 
+### Provider Chain
+
+If `HOOK_PROVIDER_1_*` exists, the hook uses numbered providers in order and falls back across each provider's `WIRE_APIS` list:
+
+```env
+HOOK_PROVIDER_1_WIRE_APIS=responses,chat_completions_stream
+HOOK_PROVIDER_2_WIRE_APIS=responses
+```
+
+Legacy `OPENAI_*` keys still work as a single default provider.
+
+`chat_completions_stream` uses an extended 180-second HTTP timeout because some compatible providers stream slowly under `gpt-5.4`.
+
 Do not commit `hooks/.env`. It contains real credentials.
 
 ## Development Commands
@@ -286,7 +299,7 @@ If a provider returns `200 OK` with an empty `/responses` body, the hook treats 
 
 At the time this README was written:
 
-- Unit / contract tests: `uv run pytest -q` -> `29 passed`
+- Unit / contract tests: `uv run pytest -q` -> `42 passed`
 - Global installed hook docs fixture smoke:
   - output -> `{"continue": true, "decision": "block", "reason": "...docs review continuation prompt..."}`
   - log file created / updated at `C:\Users\lemon\.codex\hooks\stop_v_task_classifier\stop_v_task_classifier.log`

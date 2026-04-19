@@ -4,10 +4,13 @@ import importlib
 import json
 import sys
 import traceback
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+
+import httpx
 
 
 BRANCH_MESSAGES = {
@@ -75,6 +78,34 @@ CLASSIFIER_PRIORITY = [
   "v_milestone_done",
   "v_doc_writing_done",
 ]
+
+SUPPORTED_WIRE_APIS = ("responses", "chat_completions_stream")
+DEFAULT_CHAT_STREAM_TIMEOUT_SECONDS = 180.0
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+  name: str
+  api_key: str
+  base_url: str
+  model: str
+  wire_apis: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ProviderAttemptSuccess:
+  provider_name: str
+  wire_api: str
+  text_length: int
+  result: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ProviderAttemptFailure:
+  provider_name: str
+  wire_api: str
+  error_type: str
+  error_message: str
 
 
 def get_log_path(script_path: Path) -> Path:
@@ -220,6 +251,247 @@ def load_settings(env_path: Path, *, dotenv_values_func: Any | None = None) -> d
   }
 
 
+def parse_wire_apis(raw_value: str) -> tuple[str, ...]:
+  wire_apis = tuple(item.strip() for item in raw_value.split(",") if item.strip())
+  if not wire_apis:
+    raise RuntimeError("Provider config must declare at least one wire api")
+  invalid = [item for item in wire_apis if item not in SUPPORTED_WIRE_APIS]
+  if invalid:
+    raise RuntimeError(f"Unsupported wire apis: {', '.join(invalid)}")
+  return wire_apis
+
+
+def build_legacy_provider(values: dict[str, Any]) -> ProviderConfig:
+  api_key = values.get("OPENAI_API_KEY")
+  base_url = values.get("OPENAI_BASE_URL")
+  model = values.get("OPENAI_MODEL")
+  missing = [
+    name
+    for name, value in {
+      "OPENAI_API_KEY": api_key,
+      "OPENAI_BASE_URL": base_url,
+      "OPENAI_MODEL": model,
+    }.items()
+    if not value
+  ]
+  if missing:
+    raise RuntimeError(f"Missing required .env keys: {', '.join(missing)}")
+  return ProviderConfig(
+    name="default",
+    api_key=str(api_key),
+    base_url=normalize_base_url(str(base_url)),
+    model=str(model),
+    wire_apis=("responses",),
+  )
+
+
+def load_provider_chain_settings(
+  env_path: Path,
+  *,
+  dotenv_values_func: Any | None = None,
+) -> list[ProviderConfig]:
+  if dotenv_values_func is None:
+    dotenv_values_func, _ = load_runtime_dependencies()
+  values = dotenv_values_func(env_path)
+
+  if not values.get("HOOK_PROVIDER_1_BASE_URL"):
+    return [build_legacy_provider(values)]
+
+  providers: list[ProviderConfig] = []
+  index = 1
+  while values.get(f"HOOK_PROVIDER_{index}_BASE_URL"):
+    prefix = f"HOOK_PROVIDER_{index}_"
+    name = values.get(f"{prefix}NAME") or f"provider_{index}"
+    api_key = values.get(f"{prefix}API_KEY")
+    base_url = values.get(f"{prefix}BASE_URL")
+    model = values.get(f"{prefix}MODEL")
+    wire_apis = values.get(f"{prefix}WIRE_APIS")
+    missing = [
+      field
+      for field, value in {
+        "API_KEY": api_key,
+        "BASE_URL": base_url,
+        "MODEL": model,
+        "WIRE_APIS": wire_apis,
+      }.items()
+      if not value
+    ]
+    if missing:
+      raise RuntimeError(f"Provider {index} missing fields: {', '.join(missing)}")
+    providers.append(
+      ProviderConfig(
+        name=str(name),
+        api_key=str(api_key),
+        base_url=normalize_base_url(str(base_url)),
+        model=str(model),
+        wire_apis=parse_wire_apis(str(wire_apis)),
+      )
+    )
+    index += 1
+  return providers
+
+
+def parse_classifier_response_text(raw_text: str, *, source: str) -> dict[str, Any]:
+  if not raw_text.strip():
+    if source == "responses":
+      raise RuntimeError(
+        "Responses API returned an empty response body for /responses; "
+        "provider may not support the endpoint correctly"
+      )
+    raise RuntimeError(f"{source} returned an empty response body")
+  try:
+    result = json.loads(raw_text)
+  except json.JSONDecodeError as exc:
+    preview = raw_text[:200].replace("\r", "\\r").replace("\n", "\\n")
+    raise RuntimeError(
+      f"{source} returned non-JSON output for classifier parsing. "
+      f"preview={preview!r}"
+    ) from exc
+  if "classifier_id" not in result or "is_match" not in result:
+    raise RuntimeError("Classifier JSON missing classifier_id or is_match")
+  return result
+
+
+def run_provider_attempt(
+  provider: ProviderConfig,
+  wire_api: str,
+  classifier_definition: dict[str, str],
+  message: str,
+  *,
+  openai_client_factory: Any,
+  chat_stream_requester: Any | None,
+) -> ProviderAttemptSuccess:
+  if wire_api != "responses":
+    raise RuntimeError(f"Unsupported wire api in responses transport: {wire_api}")
+  client = openai_client_factory(api_key=provider.api_key, base_url=provider.base_url)
+  response = client.responses.create(
+    model=provider.model,
+    input=[
+      {"role": "system", "content": classifier_definition["prompt"]},
+      {"role": "user", "content": message},
+    ],
+  )
+  raw_text = extract_response_text(response)
+  result = parse_classifier_response_text(raw_text, source="responses")
+  return ProviderAttemptSuccess(
+    provider_name=provider.name,
+    wire_api="responses",
+    text_length=len(raw_text),
+    result=result,
+  )
+
+
+def extract_chat_completions_text_from_sse(response_text: str) -> str:
+  chunks: list[str] = []
+  for line in response_text.splitlines():
+    if not line.startswith("data: "):
+      continue
+    payload = line[len("data: ") :].strip()
+    if not payload or payload == "[DONE]":
+      continue
+    item = json.loads(payload)
+    choices = item.get("choices") or []
+    if not choices:
+      continue
+    delta = choices[0].get("delta") or {}
+    content = delta.get("content")
+    if isinstance(content, str):
+      chunks.append(content)
+  if not chunks:
+    raise RuntimeError("chat_completions_stream SSE did not contain assistant content")
+  return "".join(chunks)
+
+
+def default_chat_stream_requester(
+  provider: ProviderConfig,
+  prompt: str,
+  message: str,
+) -> str:
+  payload = {
+    "model": provider.model,
+    "messages": [
+      {"role": "system", "content": prompt},
+      {"role": "user", "content": message},
+    ],
+    "stream": True,
+  }
+  with httpx.Client(timeout=DEFAULT_CHAT_STREAM_TIMEOUT_SECONDS) as client:
+    with client.stream(
+      "POST",
+      f"{provider.base_url}/chat/completions",
+      headers={
+        "Authorization": f"Bearer {provider.api_key}",
+        "Content-Type": "application/json",
+      },
+      json=payload,
+    ) as response:
+      response.raise_for_status()
+      return "".join(response.iter_text())
+
+
+def classify_last_message_with_provider_chain(
+  providers: list[ProviderConfig],
+  classifier_definition: dict[str, str],
+  message: str,
+  *,
+  openai_client_factory: Any,
+  chat_stream_requester: Any | None,
+  attempt_logger: Any | None,
+) -> dict[str, Any]:
+  requester = default_chat_stream_requester if chat_stream_requester is None else chat_stream_requester
+  failures: list[ProviderAttemptFailure] = []
+
+  for provider in providers:
+    for wire_api in provider.wire_apis:
+      if attempt_logger is not None:
+        attempt_logger("attempt", provider, wire_api)
+      try:
+        if wire_api == "responses":
+          success = run_provider_attempt(
+            provider,
+            wire_api,
+            classifier_definition,
+            message,
+            openai_client_factory=openai_client_factory,
+            chat_stream_requester=requester,
+          )
+        elif wire_api == "chat_completions_stream":
+          raw_text = extract_chat_completions_text_from_sse(
+            requester(provider, classifier_definition["prompt"], message)
+          )
+          success = ProviderAttemptSuccess(
+            provider_name=provider.name,
+            wire_api=wire_api,
+            text_length=len(raw_text),
+            result=parse_classifier_response_text(raw_text, source=wire_api),
+          )
+        else:
+          raise RuntimeError(f"Unsupported wire api: {wire_api}")
+      except Exception as exc:
+        failures.append(
+          ProviderAttemptFailure(
+            provider_name=provider.name,
+            wire_api=wire_api,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+          )
+        )
+        if attempt_logger is not None:
+          attempt_logger("failure", provider, wire_api, error=exc)
+        continue
+
+      if attempt_logger is not None:
+        attempt_logger("success", provider, wire_api, text_length=success.text_length)
+      return success.result
+
+  if attempt_logger is not None:
+    attempt_logger("chain_failure", None, None, failures=failures)
+  raise RuntimeError(
+    "All provider attempts failed: "
+    + "; ".join(f"{item.provider_name}/{item.wire_api} -> {item.error_message}" for item in failures)
+  )
+
+
 def classify_last_message(
   client: Any,
   settings: dict[str, str],
@@ -234,22 +506,7 @@ def classify_last_message(
     ],
   )
   raw_text = extract_response_text(response)
-  if not raw_text.strip():
-    raise RuntimeError(
-      "Responses API returned an empty response body for /responses; "
-      "provider may not support the endpoint correctly"
-    )
-  try:
-    result = json.loads(raw_text)
-  except json.JSONDecodeError as exc:
-    preview = raw_text[:200].replace("\r", "\\r").replace("\n", "\\n")
-    raise RuntimeError(
-      "Responses API returned non-JSON output for classifier parsing. "
-      f"preview={preview!r}"
-    ) from exc
-  if "classifier_id" not in result or "is_match" not in result:
-    raise RuntimeError("Classifier JSON missing classifier_id or is_match")
-  return result
+  return parse_classifier_response_text(raw_text, source="responses")
 
 
 def build_hook_output(classifications: list[dict[str, Any]]) -> dict[str, Any]:
@@ -270,12 +527,73 @@ def build_hook_output(classifications: list[dict[str, Any]]) -> dict[str, Any]:
   return {"continue": True}
 
 
+def build_attempt_logger(log_path: Path, stderr: Any):
+  def _log(
+    event_type: str,
+    provider: ProviderConfig | None,
+    wire_api: str | None,
+    *,
+    error: Exception | None = None,
+    text_length: int | None = None,
+    failures: list[ProviderAttemptFailure] | None = None,
+  ) -> None:
+    if event_type == "attempt" and provider is not None and wire_api is not None:
+      try_append_log_event(
+        log_path,
+        "provider_attempt",
+        stderr=stderr,
+        provider_name=provider.name,
+        base_url=provider.base_url,
+        wire_api=wire_api,
+        model=provider.model,
+      )
+      return
+    if event_type == "failure" and provider is not None and wire_api is not None and error is not None:
+      try_append_log_event(
+        log_path,
+        "provider_attempt_failure",
+        stderr=stderr,
+        provider_name=provider.name,
+        wire_api=wire_api,
+        error_type=type(error).__name__,
+        error_message=str(error),
+      )
+      return
+    if event_type == "success" and provider is not None and wire_api is not None:
+      try_append_log_event(
+        log_path,
+        "provider_attempt_success",
+        stderr=stderr,
+        provider_name=provider.name,
+        wire_api=wire_api,
+        text_length=text_length,
+      )
+      return
+    if event_type == "chain_failure" and failures is not None:
+      try_append_log_event(
+        log_path,
+        "provider_chain_failure",
+        stderr=stderr,
+        attempts=[
+          {
+            "provider_name": item.provider_name,
+            "wire_api": item.wire_api,
+            "error_type": item.error_type,
+            "error_message": item.error_message,
+          }
+          for item in failures
+        ],
+      )
+  return _log
+
+
 def run_hook(
   payload: Any,
   *,
   env_path: Path,
   script_path: Path,
   client_factory: Any = None,
+  chat_stream_requester: Any = None,
   stderr: Any = sys.stderr,
 ) -> tuple[dict[str, Any] | None, int]:
   log_path = get_log_path(script_path)
@@ -296,22 +614,31 @@ def run_hook(
       raise RuntimeError("Stop payload must be a JSON object")
     message = extract_last_assistant_message(payload)
     dotenv_values_func, openai_client_factory = load_runtime_dependencies()
-    settings = load_settings(env_path, dotenv_values_func=dotenv_values_func)
+    providers = load_provider_chain_settings(env_path, dotenv_values_func=dotenv_values_func)
+    primary_provider = providers[0]
     try_append_log_event(
       log_path,
       "settings_loaded",
       stderr=stderr,
       env_path=str(env_path),
-      base_url=settings["base_url"],
-      model=settings["model"],
+      base_url=primary_provider.base_url,
+      model=primary_provider.model,
+      provider_count=len(providers),
       last_assistant_message_length=len(message),
     )
     if client_factory is None:
       client_factory = openai_client_factory
-    client = client_factory(api_key=settings["api_key"], base_url=settings["base_url"])
+    attempt_logger = build_attempt_logger(log_path, stderr)
     classifications: list[dict[str, Any]] = []
     for classifier_id, classifier_definition in CLASSIFIER_DEFINITIONS.items():
-      result = classify_last_message(client, settings, classifier_definition, message)
+      result = classify_last_message_with_provider_chain(
+        providers,
+        classifier_definition,
+        message,
+        openai_client_factory=client_factory,
+        chat_stream_requester=chat_stream_requester,
+        attempt_logger=attempt_logger,
+      )
       classifications.append(result)
       try_append_log_event(
         log_path,

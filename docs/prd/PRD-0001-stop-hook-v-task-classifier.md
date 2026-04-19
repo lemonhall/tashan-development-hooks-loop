@@ -53,6 +53,8 @@
 - 提供 `.env.example`
 - 当 hook 失败退出时写本地诊断日志，并在 stderr 给出日志路径
 
+后续版本允许在不改变三类完成判定语义的前提下，为传输层增加 provider chain 与 wire-api fallback，用于处理不同 OpenAI-compatible 供应商之间的协议兼容性裂缝。
+
 ## Non-Goals
 
 - 不做 transcript 全量分析
@@ -342,6 +344,7 @@ Hook 后续逻辑必须可程序解析，不能靠自然语言再猜一次。
 - 尽管如此，按用户明确要求，`v1` 的目标运行面仍包含原生 Windows 11。
 - `v1` 的“完成判定”只以 `last_assistant_message` 为输入主载体。
 - 用户尚未提供“整体 `v` 完成”高质量样本，因此 `v1` 必须拆成至少 3 个 `M`，边开发边收集文档完成、单个 `M` 完成、整体 `v` 完成三类真实样本。
+- 传输层兼容性扩展可以通过显式 provider chain 与 wire-api fallback 落地，但不得改变 `v_doc_writing_done / v_milestone_done / v_task_fully_done` 三类业务判定规则。
 
 ## Success Metrics
 

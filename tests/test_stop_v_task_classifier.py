@@ -18,6 +18,12 @@ def test_env_example_contains_required_keys():
   assert "OPENAI_MODEL=" in content
 
 
+def test_env_example_documents_provider_chain_keys():
+  content = Path("hooks/.env.example").read_text(encoding="utf-8")
+  assert "HOOK_PROVIDER_1_NAME=" in content
+  assert "HOOK_PROVIDER_1_WIRE_APIS=" in content
+
+
 def test_extract_last_assistant_message_returns_string():
   from hooks.stop_v_task_classifier import extract_last_assistant_message
 
@@ -172,6 +178,52 @@ def test_load_settings_reads_env_file(tmp_path: Path):
   assert settings["model"] == "gpt-test"
 
 
+def test_load_provider_chain_settings_reads_numbered_providers(tmp_path: Path):
+  from hooks.stop_v_task_classifier import load_provider_chain_settings
+
+  env_file = tmp_path / ".env"
+  env_file.write_text(
+    "\n".join(
+      [
+        "HOOK_PROVIDER_1_NAME=primary",
+        "HOOK_PROVIDER_1_BASE_URL=https://api-vip.codex-for.me/v1",
+        "HOOK_PROVIDER_1_API_KEY=primary-key",
+        "HOOK_PROVIDER_1_MODEL=gpt-5.4",
+        "HOOK_PROVIDER_1_WIRE_APIS=responses,chat_completions_stream",
+        "HOOK_PROVIDER_2_NAME=backup",
+        "HOOK_PROVIDER_2_BASE_URL=https://www.right.codes/codex",
+        "HOOK_PROVIDER_2_API_KEY=backup-key",
+        "HOOK_PROVIDER_2_MODEL=gpt-5.4-high",
+        "HOOK_PROVIDER_2_WIRE_APIS=responses",
+      ]
+    )
+    + "\n",
+    encoding="utf-8",
+  )
+
+  providers = load_provider_chain_settings(env_file)
+
+  assert [provider.name for provider in providers] == ["primary", "backup"]
+  assert providers[0].wire_apis == ("responses", "chat_completions_stream")
+  assert providers[1].base_url == "https://www.right.codes/codex/v1"
+
+
+def test_load_provider_chain_settings_falls_back_to_legacy_openai_keys(tmp_path: Path):
+  from hooks.stop_v_task_classifier import load_provider_chain_settings
+
+  env_file = tmp_path / ".env"
+  env_file.write_text(
+    "OPENAI_API_KEY=test-key\nOPENAI_BASE_URL=https://example.com/v1\nOPENAI_MODEL=gpt-test\n",
+    encoding="utf-8",
+  )
+
+  providers = load_provider_chain_settings(env_file)
+
+  assert len(providers) == 1
+  assert providers[0].name == "default"
+  assert providers[0].wire_apis == ("responses",)
+
+
 def test_runtime_dependencies_clear_none_openai_module_before_import():
   import hooks.stop_v_task_classifier as hook
 
@@ -293,6 +345,200 @@ def test_classify_last_message_raises_clear_error_for_empty_response_body():
     raise AssertionError("Expected RuntimeError for empty response body")
 
 
+def test_parse_classifier_response_text_rejects_empty_body():
+  from hooks.stop_v_task_classifier import parse_classifier_response_text
+
+  try:
+    parse_classifier_response_text("", source="responses")
+  except RuntimeError as exc:
+    assert "empty response body" in str(exc).lower()
+    assert "/responses" in str(exc)
+  else:
+    raise AssertionError("Expected RuntimeError for empty body")
+
+
+def test_run_provider_attempt_uses_responses_transport():
+  from hooks.stop_v_task_classifier import ProviderConfig, run_provider_attempt
+
+  provider = ProviderConfig(
+    name="primary",
+    api_key="test-key",
+    base_url="https://example.com/v1",
+    model="gpt-test",
+    wire_apis=("responses",),
+  )
+
+  success = run_provider_attempt(
+    provider,
+    "responses",
+    {"prompt": "Return JSON"},
+    "done",
+    openai_client_factory=lambda **kwargs: FakeClient(
+      '{"classifier_id":"v_doc_writing_done","is_match":true,"version":"v1","milestone_id":null,"reason":"ok"}'
+    ),
+    chat_stream_requester=None,
+  )
+
+  assert success.provider_name == "primary"
+  assert success.wire_api == "responses"
+  assert success.result["classifier_id"] == "v_doc_writing_done"
+
+
+def test_extract_chat_completions_text_from_sse():
+  from hooks.stop_v_task_classifier import extract_chat_completions_text_from_sse
+
+  payload = (
+    'data: {"choices":[{"delta":{"content":"{\\"ok\\":true"}}]}\n\n'
+    'data: {"choices":[{"delta":{"content":"}"}}]}\n\n'
+    "data: [DONE]\n\n"
+  )
+
+  assert extract_chat_completions_text_from_sse(payload) == '{"ok":true}'
+
+
+def test_default_chat_stream_requester_uses_extended_timeout(monkeypatch):
+  import hooks.stop_v_task_classifier as hook
+
+  captured: dict[str, object] = {}
+
+  class FakeResponse:
+    def __enter__(self):
+      return self
+
+    def __exit__(self, exc_type, exc, tb):
+      return False
+
+    def raise_for_status(self):
+      return None
+
+    def iter_text(self):
+      return iter(["data: [DONE]\n\n"])
+
+  class FakeClient:
+    def __init__(self, *, timeout):
+      captured["timeout"] = timeout
+
+    def __enter__(self):
+      return self
+
+    def __exit__(self, exc_type, exc, tb):
+      return False
+
+    def stream(self, method, url, headers, json):
+      return FakeResponse()
+
+  monkeypatch.setattr(hook.httpx, "Client", FakeClient)
+
+  provider = hook.ProviderConfig(
+    name="primary",
+    api_key="test-key",
+    base_url="https://example.com/v1",
+    model="gpt-5.4",
+    wire_apis=("chat_completions_stream",),
+  )
+
+  result = hook.default_chat_stream_requester(provider, "Return JSON", "done")
+
+  assert result == "data: [DONE]\n\n"
+  assert captured["timeout"] == 180.0
+
+
+def test_classify_last_message_with_provider_chain_falls_back_to_chat_stream_after_empty_responses_body():
+  from hooks.stop_v_task_classifier import (
+    ProviderConfig,
+    classify_last_message_with_provider_chain,
+  )
+
+  provider = ProviderConfig(
+    name="primary",
+    api_key="test-key",
+    base_url="https://example.com/v1",
+    model="gpt-5.4",
+    wire_apis=("responses", "chat_completions_stream"),
+  )
+
+  result = classify_last_message_with_provider_chain(
+    [provider],
+    {"prompt": "Return JSON"},
+    "done",
+    openai_client_factory=lambda **kwargs: EmptyStringClient(),
+    chat_stream_requester=lambda provider, prompt, message: (
+      'data: {"choices":[{"delta":{"content":"{\\"classifier_id\\":\\"v_doc_writing_done\\",\\"is_match\\":true,\\"version\\":\\"v1\\",\\"milestone_id\\":null,\\"reason\\":\\"ok\\"}"}}]}\n\n'
+      "data: [DONE]\n\n"
+    ),
+    attempt_logger=None,
+  )
+
+  assert result["classifier_id"] == "v_doc_writing_done"
+
+
+def test_provider_chain_uses_backup_provider_after_primary_exhausted():
+  from hooks.stop_v_task_classifier import (
+    ProviderConfig,
+    classify_last_message_with_provider_chain,
+  )
+
+  providers = [
+    ProviderConfig(
+      "primary",
+      "k1",
+      "https://p1.example/v1",
+      "gpt-5.4",
+      ("responses", "chat_completions_stream"),
+    ),
+    ProviderConfig("backup", "k2", "https://p2.example/v1", "gpt-5.4-high", ("responses",)),
+  ]
+
+  result = classify_last_message_with_provider_chain(
+    providers,
+    {"prompt": "Return JSON"},
+    "done",
+    openai_client_factory=lambda **kwargs: (
+      EmptyStringClient() if "p1.example" in kwargs["base_url"] else AlwaysDocsClient()
+    ),
+    chat_stream_requester=lambda provider, prompt, message: (_ for _ in ()).throw(
+      RuntimeError("stream unavailable")
+    ),
+    attempt_logger=None,
+  )
+
+  assert result["reason"] == "docs done"
+
+
+def test_classify_last_message_with_provider_chain_raises_aggregated_error():
+  from hooks.stop_v_task_classifier import (
+    ProviderConfig,
+    classify_last_message_with_provider_chain,
+  )
+
+  providers = [
+    ProviderConfig(
+      "primary",
+      "k1",
+      "https://p1.example/v1",
+      "gpt-5.4",
+      ("responses", "chat_completions_stream"),
+    ),
+  ]
+
+  try:
+    classify_last_message_with_provider_chain(
+      providers,
+      {"prompt": "Return JSON"},
+      "done",
+      openai_client_factory=lambda **kwargs: EmptyStringClient(),
+      chat_stream_requester=lambda provider, prompt, message: (_ for _ in ()).throw(
+        RuntimeError("stream unavailable")
+      ),
+      attempt_logger=None,
+    )
+  except RuntimeError as exc:
+    assert "primary/responses" in str(exc)
+    assert "primary/chat_completions_stream" in str(exc)
+  else:
+    raise AssertionError("Expected aggregated provider chain failure")
+
+
 def test_run_hook_writes_failure_log_for_exit_one(tmp_path: Path):
   from hooks.stop_v_task_classifier import run_hook
 
@@ -354,6 +600,56 @@ def test_run_hook_logs_clear_error_for_empty_provider_response(tmp_path: Path):
   log_content = (tmp_path / "stop_v_task_classifier.log").read_text(encoding="utf-8")
   assert "empty response body" in log_content.lower()
   assert "/responses" in log_content
+
+
+def test_run_hook_logs_provider_attempt_events_with_actual_success_attempt(tmp_path: Path):
+  import hooks.stop_v_task_classifier as hook
+
+  env_file = tmp_path / ".env"
+  env_file.write_text(
+    "\n".join(
+      [
+        "HOOK_PROVIDER_1_NAME=primary",
+        "HOOK_PROVIDER_1_BASE_URL=https://primary.example/v1",
+        "HOOK_PROVIDER_1_API_KEY=key-1",
+        "HOOK_PROVIDER_1_MODEL=gpt-5.4",
+        "HOOK_PROVIDER_1_WIRE_APIS=responses,chat_completions_stream",
+        "HOOK_PROVIDER_2_NAME=backup",
+        "HOOK_PROVIDER_2_BASE_URL=https://backup.example/v1",
+        "HOOK_PROVIDER_2_API_KEY=key-2",
+        "HOOK_PROVIDER_2_MODEL=gpt-5.4-high",
+        "HOOK_PROVIDER_2_WIRE_APIS=responses",
+      ]
+    )
+    + "\n",
+    encoding="utf-8",
+  )
+
+  output, exit_code = hook.run_hook(
+    {
+      "hook_event_name": "Stop",
+      "last_assistant_message": "文档已经完成并落盘。",
+    },
+    env_path=env_file,
+    script_path=tmp_path / "stop_v_task_classifier.py",
+    client_factory=lambda **kwargs: (
+      EmptyStringClient() if "primary.example" in kwargs["base_url"] else AlwaysDocsClient()
+    ),
+    chat_stream_requester=lambda provider, prompt, message: (_ for _ in ()).throw(
+      RuntimeError("stream unavailable")
+    ),
+    stderr=io.StringIO(),
+  )
+
+  assert exit_code == 0
+  assert output["decision"] == "block"
+
+  log_content = (tmp_path / "stop_v_task_classifier.log").read_text(encoding="utf-8")
+  assert '"event": "provider_attempt"' in log_content
+  assert '"event": "provider_attempt_failure"' in log_content
+  assert '"event": "provider_attempt_success"' in log_content
+  assert '"provider_name": "backup"' in log_content
+  assert '"wire_api": "responses"' in log_content
 
 
 def test_run_hook_does_not_fail_when_log_write_fails(tmp_path: Path, monkeypatch):
